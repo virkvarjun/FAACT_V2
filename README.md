@@ -23,11 +23,11 @@ measured; empty cells mean not yet run.
 | M-init | Repo, packaging, docs | — | ✅ done |
 | M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS (macOS dev box; not yet run on the L40S) |
 | M1 | ACT checkpoint + honest baseline | reproduce LeRobot's official per-seed results | ✅ **48/50 = 96% agreement**, rates match at 76.0% |
-| M2 | Perturbation suite | perturbed success in 25–65% band | ⬜ not started |
-| M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ⬜ not started |
-| M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ⬜ not started |
-| M5 | Horizon control + ablation | 5-condition table, n stated | ⬜ not started |
-| M6 | Figures | — | ⬜ not started |
+| M2 | Perturbation suite | perturbed success in 25–65% band | ⚠️ **in band (50%), but by post-hoc check, not a sweep** |
+| M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.83 → 0.57**, 493 states |
+| M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ❌ **0.479** (5-fold pooled) |
+| M5 | Horizon control + ablation | table with n stated | ✅ table produced; **gain not significant** |
+| M6 | Figures | — | 🟡 fig 1 done, rest pending run 2 |
 
 ### M1 baseline, verified against LeRobot's official evaluation
 
@@ -63,6 +63,83 @@ success rate quoted in this repo states its seed window and n.**
 Device note: on CPU we reproduce the official per-seed outcomes at n=50 exactly (38/50); MPS differs on a
 single episode (39/50) from float noise. Records: `artifacts/act_verification.json`, `artifacts/baseline_eval.json`.
 Not yet re-run on the L40S.
+
+### M2 — perturbations, honest status
+
+The magnitude sweep in `scripts/03_calibrate_perturbations.py` was **not run as a full gate**.
+The suite was used at its default magnitudes, and the band was verified *post hoc*: under
+perturbation, ACT at fixed h=100 scores **15/30 = 50%** (M5 run 1), which is inside the
+25–65% target band and leaves headroom in both directions. A proper per-kind sweep would
+still be worth running; the duration sweep for `grasp_slip` is verified working
+(dur 2/3/6 → 67%, dur 12 → 33% on a 3-episode smoke test).
+
+### M3 — reversibility labels, measured
+
+```
+493 labelled states over 40 episodes (0 excluded)
+mean R before onset   0.829  (n=140)
+mean R after  onset   0.565  (n=353)
+fraction of R exactly 0 or 1: 0.83
+```
+
+Gate PASS. ~1h45 wall on 3 performance cores of an M5 MacBook, **zero thermal pauses**
+(never left macOS "fair"). The run was killed once at 33/40 by a task timeout and resumed
+from per-episode shards with no recomputation.
+
+### M4 — reversibility head, measured (gate FAILS)
+
+5-fold **episode-level** cross-validation, pooled out-of-fold predictions over all 493 states:
+
+| feature set | dim | pooled Spearman | per-fold | MAE (baseline 0.415) |
+|---|---|---|---|---|
+| cheap | 182 | 0.331 | 0.355 ± 0.119 | 0.329 |
+| transformer | 1024 | 0.447 | 0.462 ± 0.161 | 0.282 |
+| **minimal** | **28** | **0.479** | 0.483 ± 0.138 | **0.281** |
+| all | 1206 | 0.390 | 0.423 ± 0.123 | 0.306 |
+
+**Gate FAILS: 0.479 against a 0.50 threshold.** Marginal — 0.50 is inside one per-fold
+standard deviation — and MAE beats predict-the-mean by 32%, so there is real signal.
+
+Two findings worth more than the gate:
+
+- **Label noise is not the bottleneck.** Test–retest reliability of the labels is **0.977**
+  (treating measured R as the true probability and drawing two independent Binomial(M=8)
+  re-measurements), because 83% of R values saturate at 0 or 1. So 0.479 is 49% of the
+  achievable ceiling and raising M to 16 or 32 would buy nothing (ceiling 0.992 / 0.999).
+  The limit is features and training-set size, not measurement.
+- **28 dimensions beat 1024.** Arm state plus the first action predicts reversibility better
+  than ACT's internal transformer representation, which overfits at ~300 training states
+  per fold. Reversibility looks predictable from where the arm is and what it is about to
+  do — no policy internals required.
+
+A single 24/8/8 split was tried first and abandoned as untrustworthy: it selected
+`transformer` on validation at 0.509, which then scored 0.265 on test — a 0.24 swing on the
+same model, driven by an 8-episode test set.
+
+### M5 — ablation, run 1 (n=30, seeds 3000–3029, h_min=5, γ=1.0)
+
+| Condition | n | Success | Interventions/ep | Mean horizon | Lead time (n reacted) | False alarm |
+|---|---|---|---|---|---|---|
+| fixed h=100 | 30 | 15/30 = 50% | 3.7 | 100 | — (0/30) | 0% |
+| fixed h=20 | 30 | 16/30 = 53% | 18.9 | 20 | — (0/30) | 0% |
+| fixed h=5 | 30 | **0/30 = 0%** | 80.0 | 5 | — (0/30) | — |
+| reversibility_gated (γ=1) | 30 | **17/30 = 57%** | 6.5 | 57 | +135 (11/30) | 18% |
+
+**The claim is nominally supported but not statistically significant.** McNemar on paired
+seeds: vs h=100 **p=0.688** (4 vs 2 discordant), vs h=20 **p=1.000** (6 vs 5). Only vs h=5
+is it significant (17 vs 0, p<0.001), and that baseline is degenerate. Two episodes is noise.
+
+What does hold up:
+
+- **The ablation that matters most is clean.** Replanning 5× more often (h=20) buys one
+  episode over h=100, so gating is not smuggling in a "replan more often" effect.
+- **Efficiency is a real difference.** Gated matches or beats h=20 using 6.5 interventions
+  per episode against 18.9, at a mean horizon of 57 rather than a fixed 20.
+- **fixed h=5 → 0/30 is a finding.** Shortening the horizon is *not* a free safety lever for
+  chunked policies: ACT emits absolute joint targets, so replanning every 5 steps without
+  temporal ensembling makes each chunk jump to a different target and the motion falls
+  apart. Run 1's gated condition was therefore handicapped — its floor sat in exactly that
+  collapse regime. Run 2 uses `h_min=20`.
 
 ---
 
