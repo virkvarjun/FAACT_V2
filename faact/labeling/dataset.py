@@ -197,6 +197,44 @@ def episode_split(
     return tuple(dataset.subset(np.isin(dataset.episode_id, g)) for g in groups)
 
 
+def episode_kfold(
+    dataset: ReversibilityDataset, k: int = 5, seed: int = 0
+) -> list[tuple[ReversibilityDataset, ReversibilityDataset, ReversibilityDataset]]:
+    """K-fold cross-validation over **episodes**, yielding (train, val, test) per fold.
+
+    A single 24/8/8 split of 40 episodes turned out to be far too noisy to draw conclusions
+    from — validation and test disagreed by 0.24 Spearman on the same model. K-fold fixes
+    that without needing more data: every episode is tested exactly once, so the pooled
+    out-of-fold estimate uses all 493 states instead of ~96.
+
+    Fold i uses fold i as test and fold (i+1) % k as validation (for early stopping), with
+    the remaining k-2 folds for training. Episodes never straddle folds, so the leakage
+    rule is preserved.
+    """
+    if k < 3:
+        raise ValueError(f"need k >= 3 to carve out a validation fold, got {k}")
+
+    episodes = np.unique(dataset.episode_id)
+    if len(episodes) < k:
+        raise ValueError(f"{len(episodes)} episodes cannot fill {k} folds")
+
+    shuffled = np.random.default_rng(seed).permutation(episodes)
+    folds = np.array_split(shuffled, k)
+
+    splits = []
+    for i in range(k):
+        test_eps = folds[i]
+        val_eps = folds[(i + 1) % k]
+        train_eps = np.concatenate([folds[j] for j in range(k) if j not in (i, (i + 1) % k)])
+        splits.append(
+            tuple(
+                dataset.subset(np.isin(dataset.episode_id, eps))
+                for eps in (train_eps, val_eps, test_eps)
+            )
+        )
+    return splits
+
+
 @dataclass
 class Standardiser:
     """Zero-mean unit-variance scaling, fit on training data only."""

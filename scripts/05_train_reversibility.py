@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from faact.labeling.dataset import (  # noqa: E402
     FEATURE_GROUPS,
     Standardiser,
+    episode_kfold,
     episode_split,
     load_shards,
 )
@@ -82,6 +83,117 @@ def calibration_figure(y_true: np.ndarray, y_pred: np.ndarray, path: Path, n_bin
     plt.close(fig)
 
 
+def run_cv(full, groups: list[str], args) -> int:
+    """Cross-validated evaluation with pooled out-of-fold predictions.
+
+    Each episode is held out exactly once, so the reported Spearman is computed over every
+    labelled state rather than over one arbitrary test split. Per-fold spread is reported
+    alongside, because a single number without it is what made the original split
+    misleading in the first place.
+    """
+    results = {}
+    for group in groups:
+        data = full.select(group)
+        oof_pred = np.full(len(data), np.nan)
+        fold_scores = []
+
+        for train, val, test in episode_kfold(data, k=args.folds, seed=args.split_seed):
+            std = Standardiser.fit(train.X)
+            head = ReversibilityHead(input_dim=data.X.shape[1], dropout=args.dropout)
+            train_head(
+                head, std.transform(train.X), train.y, std.transform(val.X), val.y,
+                epochs=args.epochs, patience=args.patience, lr=args.lr,
+                weight_decay=args.weight_decay, seed=args.split_seed,
+            )
+            pred = head.predict(std.transform(test.X))
+            # Place predictions back at their original row positions so the pooled vector
+            # lines up with data.y exactly.
+            oof_pred[np.isin(data.episode_id, np.unique(test.episode_id))] = pred
+            fold_scores.append(evaluate(head, std.transform(test.X), test.y)["spearman"])
+
+        if np.isnan(oof_pred).any():
+            raise RuntimeError("some states were never held out; folds do not cover the data")
+
+        from scipy.stats import spearmanr
+
+        pooled = float(spearmanr(oof_pred, data.y).statistic)
+        fold_scores = np.array(fold_scores, dtype=float)
+        results[group] = {
+            "feature_set": group,
+            "dim": int(data.X.shape[1]),
+            "pooled_spearman": pooled,
+            "fold_spearman_mean": float(np.nanmean(fold_scores)),
+            "fold_spearman_std": float(np.nanstd(fold_scores)),
+            "fold_spearman": fold_scores.tolist(),
+            "mae": float(np.mean(np.abs(oof_pred - data.y))),
+            "baseline_mae": float(np.mean(np.abs(data.y - data.y.mean()))),
+            "oof_pred": oof_pred.tolist(),
+        }
+        r = results[group]
+        print(
+            f"  {group:<12} dim {r['dim']:>5}   pooled spearman {pooled:+.3f}   "
+            f"per-fold {r['fold_spearman_mean']:+.3f} +/- {r['fold_spearman_std']:.3f}   "
+            f"mae {r['mae']:.3f} (baseline {r['baseline_mae']:.3f})",
+            flush=True,
+        )
+
+    best = max(results.values(), key=lambda r: r["pooled_spearman"])
+    data = full.select(best["feature_set"])
+    pooled = best["pooled_spearman"]
+    passed = bool(pooled >= GATE_SPEARMAN)
+
+    fig_path = ARTIFACTS / "fig_calibration.png"
+    calibration_figure(data.y, np.asarray(best["oof_pred"]), fig_path)
+
+    # Refit on everything for the runtime head: cross-validation measured how well this
+    # configuration generalises, so the deployed model should use all the data.
+    std = Standardiser.fit(data.X)
+    head = ReversibilityHead(input_dim=data.X.shape[1], dropout=args.dropout)
+    train, val, _ = episode_kfold(data, k=args.folds, seed=args.split_seed)[0]
+    train_head(
+        head, std.transform(train.X), train.y, std.transform(val.X), val.y,
+        epochs=args.epochs, patience=args.patience, lr=args.lr,
+        weight_decay=args.weight_decay, seed=args.split_seed,
+    )
+    torch.save(
+        {
+            "state_dict": head.state_dict(),
+            "input_dim": int(data.X.shape[1]),
+            "feature_set": best["feature_set"],
+            "feature_keys": data.feature_keys,
+            "mean": std.mean,
+            "std": std.std,
+        },
+        ARTIFACTS / "reversibility_head.pt",
+    )
+
+    out = write_json(
+        args.out,
+        {
+            "gate": "M4",
+            "passed": passed,
+            "method": f"{args.folds}-fold cross-validation over episodes, pooled out-of-fold",
+            "selected_feature_set": best["feature_set"],
+            "n_states": len(data),
+            "n_episodes": data.n_episodes,
+            "sweep": [{k: v for k, v in r.items() if k != "oof_pred"} for r in results.values()],
+        },
+    )
+
+    print(
+        f"\nMILESTONE: M4\n"
+        f"GATE: {'PASS' if passed else 'FAIL'} (pooled Spearman >= {GATE_SPEARMAN})\n"
+        f"MEASURED: pooled out-of-fold Spearman {pooled:.3f} over {len(data)} states "
+        f"from {data.n_episodes} episodes ({args.folds}-fold, episode-level)\n"
+        f"          per-fold {best['fold_spearman_mean']:.3f} "
+        f"+/- {best['fold_spearman_std']:.3f}\n"
+        f"          MAE {best['mae']:.3f} vs predict-the-mean {best['baseline_mae']:.3f}\n"
+        f"          feature set '{best['feature_set']}' (dim {best['dim']})\n"
+        f"FILES: {out}, {fig_path}, {ARTIFACTS / 'reversibility_head.pt'}"
+    )
+    return 0 if passed else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--shards", default=str(SHARD_DIR))
@@ -92,6 +204,8 @@ def main() -> int:
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--feature-sets", nargs="*", default=None,
                     help=f"subset of {sorted(FEATURE_GROUPS)}; default sweeps all")
+    ap.add_argument("--folds", type=int, default=5,
+                    help="episode-level CV folds; 0 uses a single train/val/test split")
     ap.add_argument("--split-seed", type=int, default=0)
     ap.add_argument("--out", default="reversibility_training.json")
     args = ap.parse_args()
@@ -105,6 +219,9 @@ def main() -> int:
     groups = args.feature_sets or list(FEATURE_GROUPS)
     sweep = []
     best = None
+
+    if args.folds:
+        return run_cv(full, groups, args)
 
     # Sweep feature groups and select on VALIDATION. The full 1206-d vector has ~10x more
     # dimensions than we have training states, so which subset generalises is an empirical
