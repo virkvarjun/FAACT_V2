@@ -198,3 +198,19 @@ def test_oracle_interpolates_between_labelled_timesteps():
 def test_oracle_requires_labels():
     with pytest.raises(ValueError, match="at least one"):
         oracle({})
+
+
+def test_history_is_not_retained_when_ensembling_is_off():
+    """Without the ensembler nothing reads history, so retaining chunks is pure waste."""
+    ex = ChunkExecutor(FakePolicy(), fixed(5))
+    ex.reset()
+    run(ex, 200)
+    assert ex.n_replans == 40
+    assert ex._history == []
+
+
+def test_history_is_retained_when_ensembling_is_on():
+    ex = ChunkExecutor(FakePolicy(), fixed(5), temporal_ensemble=True)
+    ex.reset()
+    run(ex, 50)
+    assert ex._history, "the ensembler needs overlapping chunks"

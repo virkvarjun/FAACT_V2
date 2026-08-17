@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from faact.backbone.act_wrapper import ACTWrapper  # noqa: E402
 from faact.envs.make import MAX_EPISODE_STEPS, make_env  # noqa: E402
 from faact.envs.perturb import KINDS, sample_spec  # noqa: E402
-from faact.eval.runner import run_episode, success_rate  # noqa: E402
+from faact.eval.runner import PerturbationNeverFired, run_episode, success_rate  # noqa: E402
 from faact.runtime.controller import fixed  # noqa: E402
 from faact.runtime.executor import ChunkExecutor  # noqa: E402
 from faact.utils import timed, write_json  # noqa: E402
@@ -45,33 +45,60 @@ BAND_MID = sum(BAND) / 2
 # an episode that was otherwise on track, which is the case reversibility is about.
 ONSET_RANGE = (40, 160)
 
-# Magnitude sweeps per kind. Units differ by kind — see faact/envs/perturb.py DEFAULTS.
-SWEEPS: dict[str, list[float]] = {
-    "object_displace": [0.02, 0.035, 0.05, 0.08],  # metres
-    "grasp_slip": [1.0],                            # binary: gripper is forced open or not
-    "actuation_noise": [0.02, 0.05, 0.10, 0.20],    # action-space std dev
-    "occlusion": [0.10, 0.25, 0.50, 0.90],          # fraction of image area
+# Sweeps per kind, as (magnitude, duration) pairs. Units differ by kind — see
+# faact/envs/perturb.py DEFAULTS. `duration=None` keeps that kind's default.
+#
+# grasp_slip sweeps duration rather than magnitude: the gripper is either forced fully open
+# or it is not, so "how severe" is entirely "for how many steps".
+SWEEPS: dict[str, list[tuple[float, int | None]]] = {
+    "object_displace": [(m, None) for m in (0.02, 0.035, 0.05, 0.08)],  # metres
+    "grasp_slip": [(1.0, d) for d in (2, 3, 6, 12)],                    # steps held open
+    "actuation_noise": [(m, None) for m in (0.02, 0.05, 0.10, 0.20)],   # action std dev
+    "occlusion": [(m, None) for m in (0.10, 0.25, 0.50, 0.90)],         # image area fraction
 }
 
 
-def evaluate(env, executor, kind: str, magnitude: float, seeds: list[int]) -> dict:
-    """Run one (kind, magnitude) cell and return its measured success rate."""
-    results = []
+def evaluate(
+    env, executor, kind: str, magnitude: float, duration: int | None, seeds: list[int]
+) -> dict:
+    """Run one (kind, magnitude) cell and return its measured success rate.
+
+    Episodes that finish before their onset step are excluded, not counted as perturbed —
+    they never experienced the disturbance, so scoring them would inflate the rate with
+    unperturbed successes. The exclusion count is reported so it is never invisible.
+    """
+    results, skipped = [], []
     for seed in seeds:
         # Spec RNG is seeded from the episode seed, so the same cell replays identically.
         rng = np.random.default_rng(seed)
-        spec = sample_spec(kind, rng, onset_range=ONSET_RANGE, magnitude=magnitude)
-        results.append(
-            run_episode(env, executor, seed=seed, perturb_spec=spec, max_steps=MAX_EPISODE_STEPS)
+        spec = sample_spec(
+            kind, rng, onset_range=ONSET_RANGE, magnitude=magnitude, duration=duration
+        )
+        try:
+            results.append(
+                run_episode(
+                    env, executor, seed=seed, perturb_spec=spec, max_steps=MAX_EPISODE_STEPS
+                )
+            )
+        except PerturbationNeverFired as exc:
+            skipped.append({"seed": seed, "steps": exc.steps, "onset": spec.onset_step})
+
+    if not results:
+        raise RuntimeError(
+            f"every episode for {kind} mag={magnitude} ended before its onset; "
+            f"ONSET_RANGE={ONSET_RANGE} is too late for this policy"
         )
 
     rate = success_rate(results)
     return {
         "kind": kind,
         "magnitude": magnitude,
+        "duration": duration,
         "success_rate": rate,
         "n_success": sum(r.success for r in results),
         "n_episodes": len(results),
+        "n_skipped_before_onset": len(skipped),
+        "skipped": skipped,
         "in_band": BAND[0] <= rate <= BAND[1],
         "mean_max_reward": float(np.mean([r.max_reward for r in results])),
     }
@@ -104,12 +131,15 @@ def main() -> int:
     with timed("perturbation sweep") as t:
         for kind in args.kinds:
             print(f"{kind}:")
-            for magnitude in SWEEPS[kind]:
-                cell = evaluate(env, executor, kind, magnitude, seeds)
+            for magnitude, duration in SWEEPS[kind]:
+                cell = evaluate(env, executor, kind, magnitude, duration, seeds)
                 cells.append(cell)
+                skipped = cell["n_skipped_before_onset"]
                 print(
-                    f"  mag={magnitude:<6} success={cell['n_success']:>2}/{cell['n_episodes']} "
+                    f"  mag={magnitude:<6} dur={str(duration):<5} "
+                    f"success={cell['n_success']:>2}/{cell['n_episodes']} "
                     f"= {cell['success_rate']:.0%}  mean_reward={cell['mean_max_reward']:.1f}"
+                    f"{f'  ({skipped} ended before onset)' if skipped else ''}"
                     f"  {'IN BAND' if cell['in_band'] else ''}",
                     flush=True,
                 )
@@ -121,7 +151,8 @@ def main() -> int:
             pool = in_band or kind_cells
             best = min(pool, key=lambda c: abs(c["success_rate"] - BAND_MID))
             chosen[kind] = {**best, "any_in_band": bool(in_band)}
-            print(f"  -> chose mag={best['magnitude']} at {best['success_rate']:.0%}"
+            print(f"  -> chose mag={best['magnitude']} dur={best['duration']} "
+                  f"at {best['success_rate']:.0%}"
                   f"{'' if in_band else '  (NO MAGNITUDE LANDED IN BAND)'}\n")
     env.close()
 
@@ -148,7 +179,7 @@ def main() -> int:
           f"(every kind must have a magnitude in {BAND[0]:.0%}-{BAND[1]:.0%})")
     print(f"MEASURED: unperturbed {base_rate:.0%} on seeds {seeds[0]}-{seeds[-1]}, n={len(seeds)}")
     for kind, c in chosen.items():
-        print(f"          {kind:<17} mag={c['magnitude']:<6} "
+        print(f"          {kind:<17} mag={c['magnitude']:<6} dur={str(c['duration']):<5} "
               f"{c['n_success']}/{c['n_episodes']} = {c['success_rate']:.0%}"
               f"{'' if c['any_in_band'] else '   OUT OF BAND'}")
     print(f"WALL CLOCK: {payload['seconds']:.0f}s\nFILES: {out}")

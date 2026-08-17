@@ -32,6 +32,28 @@ from faact.envs.state import observe
 SUCCESS_REWARD = 4
 
 
+class PerturbationNeverFired(RuntimeError):
+    """A perturbed episode in which the disturbance never actually happened.
+
+    Split into its own type because there are two very different causes and only one is a
+    bug. An episode that *ended* before its onset step is legitimate data — the policy
+    simply finished early — and a caller running a long sweep should count and exclude it,
+    not crash. An episode that ran *past* the onset without firing is a real defect, and is
+    raised as a plain RuntimeError instead.
+
+    Either way the episode is unperturbed and must never be counted as perturbed. Quietly
+    returning it is precisely what produced v1's 0/20.
+    """
+
+    def __init__(self, spec: PerturbationSpec, steps: int) -> None:
+        super().__init__(
+            f"episode ended after {steps} steps, before perturbation onset at "
+            f"{spec.onset_step} ({spec.kind}) — it is unperturbed and must be excluded"
+        )
+        self.spec = spec
+        self.steps = steps
+
+
 @dataclass
 class EpisodeResult:
     """Everything one episode produced. Serialisable, and the unit of every metric."""
@@ -83,6 +105,9 @@ def run_episode(
     `executor` is a `ChunkExecutor`; swapping its `horizon_fn` is what distinguishes every
     condition in the ablation. Nothing else about the loop changes between conditions.
     """
+    if max_steps < 1:
+        raise ValueError(f"max_steps must be >= 1, got {max_steps}")
+
     obs, _ = env.reset(seed=seed)
     executor.reset()
 
@@ -124,11 +149,16 @@ def run_episode(
             break
 
     if perturbation is not None and not perturbation.fired:
-        # A spec whose window falls outside the episode is a silent no-op, and silent
-        # no-ops are precisely what produced v1's 0/20. Refuse to return such an episode.
+        steps = t + 1
+        if steps <= perturb_spec.onset_step:
+            # Legitimate: the episode finished (usually succeeded) before the disturbance
+            # was due. Recoverable by the caller, which should exclude and count it.
+            raise PerturbationNeverFired(perturb_spec, steps)
+        # Ran past the onset and still never fired — that is a defect in the applier.
         raise RuntimeError(
-            f"perturbation {perturb_spec} never fired in {t + 1} steps — onset is past the "
-            "episode horizon, so this episode is unperturbed and must not be counted"
+            f"perturbation {perturb_spec} never fired despite the episode reaching step "
+            f"{steps}, past its onset at {perturb_spec.onset_step}. This is a bug in the "
+            "applier, not an early finish."
         )
 
     return EpisodeResult(

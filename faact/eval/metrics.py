@@ -20,19 +20,13 @@ from typing import Iterable
 
 import numpy as np
 
-from faact.eval.runner import EpisodeResult
+# Re-exported rather than redefined: one definition of success for the whole repo.
+from faact.eval.runner import EpisodeResult, success_rate  # noqa: F401
 
 # A replan counts as a "reaction" when it commits noticeably less than the full chunk.
 # 50 of a 100-step chunk is the midpoint of the horizon range, so it separates "committed
 # long, business as usual" from "shortened up, something looks wrong".
 REACTION_HORIZON_THRESHOLD = 50
-
-
-def success_rate(results: Iterable[EpisodeResult]) -> float:
-    results = list(results)
-    if not results:
-        raise ValueError("success_rate of zero episodes is undefined")
-    return sum(r.success for r in results) / len(results)
 
 
 def interventions_per_episode(results: Iterable[EpisodeResult]) -> float:

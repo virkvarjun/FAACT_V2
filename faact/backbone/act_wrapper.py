@@ -131,6 +131,9 @@ class ACTWrapper:
         lerobot, so they can be passed straight to `env.step`.
         """
         batch = self._to_batch(obs)
+        # Drop anything left over from a previous call before the forward pass, so a hook
+        # that stops firing surfaces as an error rather than as silently stale features.
+        self._captured.clear()
         chunk = self.policy.predict_action_chunk(batch)[0].float().cpu().numpy()
 
         features = self._pop_features()

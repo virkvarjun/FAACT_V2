@@ -77,11 +77,16 @@ def sample_spec(
     rng: np.random.Generator,
     onset_range: tuple[int, int],
     magnitude: float | None = None,
+    duration: int | None = None,
 ) -> PerturbationSpec:
     """Draw a spec with a random onset inside `onset_range` (inclusive, exclusive).
 
     Onset is randomised so the reversibility head cannot learn "trouble always starts at
-    step 120"; magnitude defaults to the calibrated value for the kind.
+    step 120". `magnitude` and `duration` default to the calibrated values for the kind.
+
+    `duration` is overridable because for `grasp_slip` it is the *only* thing worth tuning:
+    the gripper is either forced open or it is not, so its severity is entirely "for how
+    many steps". Without this, calibrating grasp_slip would be a no-op sweep.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown perturbation kind {kind!r}; expected one of {KINDS}")
@@ -93,7 +98,7 @@ def sample_spec(
         kind=kind,
         onset_step=int(rng.integers(lo, hi)),
         magnitude=float(d["magnitude"] if magnitude is None else magnitude),
-        duration=int(d["duration"]),
+        duration=int(d["duration"] if duration is None else duration),
         # Own seed so the *same* spec reproduces the same noise/patch/direction.
         seed=int(rng.integers(0, 2**31 - 1)),
     )

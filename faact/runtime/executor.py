@@ -122,7 +122,10 @@ class ChunkExecutor:
         self._chunk = chunk
         self._chunk_start = t
         self._committed = horizon
-        self._history.append((t, chunk))
+        # Only the ensembler reads history. Keeping it otherwise would retain every chunk
+        # of the episode — at h=5 that is ~80 chunks of (100, 14) for no reason.
+        if self.temporal_ensemble:
+            self._history.append((t, chunk))
         self.replans.append(Replan(timestep=t, horizon=horizon, features=features))
 
     # -- temporal ensembling -----------------------------------------------------------

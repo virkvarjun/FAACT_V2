@@ -157,3 +157,17 @@ def test_fired_reports_whether_the_perturbation_ever_touched_the_episode():
     assert not p.fired
     p.on_action(np.zeros(14), t=5)
     assert p.fired
+
+
+def test_sample_spec_can_override_duration():
+    """grasp_slip's only real tunable is duration; without this its sweep is a no-op."""
+    rng = np.random.default_rng(0)
+    spec = sample_spec("grasp_slip", rng, onset_range=(50, 150), duration=12)
+    assert spec.duration == 12
+    assert [t for t in range(200) if spec.is_active(t)][-1] == spec.onset_step + 11
+
+
+def test_sample_spec_defaults_duration_per_kind():
+    rng = np.random.default_rng(0)
+    assert sample_spec("grasp_slip", rng, onset_range=(50, 150)).duration == 3
+    assert sample_spec("actuation_noise", rng, onset_range=(50, 150)).duration == 20

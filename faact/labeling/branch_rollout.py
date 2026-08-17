@@ -39,8 +39,23 @@ and 0.00 on a healthy and a doomed state respectively), which is a legitimate ch
 — binary labels under BCE still train a calibrated probability — but it makes M > 1
 branches pure waste, so prefer M=1 if running that way.
 
+**What a branch does *not* re-apply, and why.** Branches roll forward without re-applying
+the perturbation, so R is defined as *recoverability of the state we are now in*, under
+undisturbed future dynamics — "given where I am, can the policy still finish?" This is the
+quantity the horizon controller needs, and for `object_displace`, `grasp_slip` and
+`actuation_noise` it is also faithful: those disturbances act through the world, so their
+effect is already inside the snapshot.
+
+The exception worth stating plainly is `occlusion`, which is purely perceptual and leaves
+no trace in physics. Labelling a state mid-occlusion therefore measures recoverability as
+if the camera had just cleared, which will read slightly optimistic. It is a known
+limitation of the definition, not an oversight.
+
 **Budget.** Branches run open-loop at h=100, so a 250-step continuation costs ~3 policy
-forward passes instead of 250. MuJoCo, not the GPU, is then the bottleneck.
+forward passes instead of 250. Measured on the dev box: MuJoCo runs at 84 steps/s while an
+ACT forward is 76 ms, so a 250-step branch is 2.96 s of simulation against 0.23 s of
+policy. **The simulator is the bottleneck by ~13x, and the GPU is almost irrelevant here** —
+this scales with CPU cores, not with accelerator.
 """
 
 from __future__ import annotations

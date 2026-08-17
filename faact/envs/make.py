@@ -7,6 +7,7 @@ swapping tasks later is a change to this file only.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 import numpy as np
@@ -33,10 +34,11 @@ def make_env(
 ) -> Any:
     """Build the ALOHA transfer-cube env, seeded if a seed is given.
 
-    On headless boxes MuJoCo needs EGL; we default it rather than let rendering fail deep
-    inside an eval run, but never override an explicit choice.
+    Picks a MuJoCo rendering backend if the user has not, rather than letting rendering
+    fail deep inside an eval run. EGL is the headless-Linux (RunPod) choice; it does not
+    exist on macOS, where GLFW is the working one. An explicit MUJOCO_GL always wins.
     """
-    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("MUJOCO_GL", "glfw" if sys.platform == "darwin" else "egl")
 
     import gym_aloha  # noqa: F401  — import registers the env id with gymnasium
     import gymnasium as gym

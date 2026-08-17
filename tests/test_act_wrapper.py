@@ -14,7 +14,7 @@ import pytest
 from faact.backbone.act_wrapper import ACTWrapper, concat_features
 from faact.envs.make import ACTION_DIM, make_env
 from faact.envs.perturb import PerturbationSpec
-from faact.eval.runner import run_episode
+from faact.eval.runner import PerturbationNeverFired, run_episode
 from faact.runtime.controller import fixed
 from faact.runtime.executor import ChunkExecutor
 
@@ -117,13 +117,35 @@ def test_episode_runs_and_records_a_replan_trace(policy):
     assert r.perturb is None
 
 
-def test_runner_refuses_an_episode_whose_perturbation_never_fired(policy):
-    """A no-op perturbation must raise, not quietly return an unperturbed episode."""
+def test_early_finish_before_onset_raises_the_recoverable_exception(policy):
+    """An episode that ends before its onset is data to exclude, not a crash mid-sweep."""
     env = make_env()
     try:
         ex = ChunkExecutor(policy, fixed(50))
         spec = PerturbationSpec("grasp_slip", onset_step=300, magnitude=1.0, duration=3)
-        with pytest.raises(RuntimeError, match="never fired"):
+        with pytest.raises(PerturbationNeverFired) as exc:
             run_episode(env, ex, seed=1001, perturb_spec=spec, max_steps=30)
+    finally:
+        env.close()
+
+    assert exc.value.steps == 30
+    assert exc.value.spec.onset_step == 300
+    # Still a RuntimeError, so callers that do not care keep working.
+    assert isinstance(exc.value, RuntimeError)
+
+
+def test_running_past_onset_without_firing_is_a_plain_bug(policy, monkeypatch):
+    """The other cause is an applier defect, and must NOT be catchable as an early finish."""
+    import faact.eval.runner as runner_mod
+
+    env = make_env()
+    try:
+        ex = ChunkExecutor(policy, fixed(50))
+        # Simulate an applier that silently does nothing — v1's actual failure mode.
+        monkeypatch.setattr(runner_mod.Perturbation, "on_action", lambda self, a, t: a)
+        spec = PerturbationSpec("grasp_slip", onset_step=5, magnitude=1.0, duration=3)
+        with pytest.raises(RuntimeError, match="bug in the applier") as exc:
+            run_episode(env, ex, seed=1001, perturb_spec=spec, max_steps=30)
+        assert not isinstance(exc.value, PerturbationNeverFired)
     finally:
         env.close()
