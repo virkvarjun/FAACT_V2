@@ -22,25 +22,47 @@ measured; empty cells mean not yet run.
 |---|---|---|---|
 | M-init | Repo, packaging, docs | — | ✅ done |
 | M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS (macOS dev box; not yet run on the L40S) |
-| M1 | ACT checkpoint + honest baseline | unperturbed success ≥ 60% over 20 eps | ✅ **13/20 = 65%** |
+| M1 | ACT checkpoint + honest baseline | reproduce LeRobot's official per-seed results | ✅ **48/50 = 96% agreement**, rates match at 76.0% |
 | M2 | Perturbation suite | perturbed success in 25–65% band | ⬜ not started |
 | M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ⬜ not started |
 | M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ⬜ not started |
 | M5 | Horizon control + ablation | 5-condition table, n stated | ⬜ not started |
 | M6 | Figures | — | ⬜ not started |
 
-### M1 baseline, measured
+### M1 baseline, verified against LeRobot's official evaluation
 
 `lerobot/act_aloha_sim_transfer_cube_human` loads directly against lerobot 0.3.2 — **no ACT training was
-needed**. Evaluated unperturbed at fixed h=100, seeds 1000–1019:
+needed**.
 
-| n | success | wall clock | device |
+We do not check the policy against a success-rate threshold, because a rate alone cannot tell a correct
+inference path from a subtly broken one. The checkpoint repo ships `eval_info.json`: 500 per-episode records
+from the official run, each tagged with its seed, starting at seed 1000. Our runner uses the same seeds, so
+the comparison is episode by episode (`scripts/01_verify_act_checkpoint.py`).
+
+| n | ours | official, same seeds | per-seed agreement |
 |---|---|---|---|
-| 20 | **13/20 = 65%** | 86s (4.3 s/ep) | mps (macOS dev box) |
+| 20 | 13/20 = 65.0% | 13/20 = 65.0% | **20/20 = 100%** |
+| 50 | 38/50 = 76.0% | 38/50 = 76.0% | **48/50 = 96%** |
 
-Failures are graded, not degenerate: the 7 failures reached reward 1–2 of 4 (approach and grasp, no
-transfer). 65% leaves the headroom that v1's 0/20 did not. Full per-episode records:
-`artifacts/baseline_eval.json`. Not yet re-run on the L40S.
+The two disagreements at n=50 (seeds 1026, 1043) fall one in each direction and cancel. Independently, our
+chunk prediction is **bitwise identical** to lerobot's own `select_action` path on the same observation.
+
+**Why 65% is not a shortfall.** The official run reports 83% — over 500 episodes. On its own first 20 seeds
+it scores 65.0%, and on its first 50 it scores 76.0%; those seeds are simply a harder-than-average draw:
+
+| seed window | official success |
+|---|---|
+| 1000–1019 (n=20) | 65.0% |
+| 1000–1049 (n=50) | 76.0% |
+| 1000–1099 (n=100) | 81.0% |
+| 1000–1499 (n=500) | 83.0% |
+
+So a 20-episode run judged against "80–90%" would look like a broken checkpoint when it is exact. **Any
+success rate quoted in this repo states its seed window and n.**
+
+Device note: on CPU we reproduce the official per-seed outcomes at n=50 exactly (38/50); MPS differs on a
+single episode (39/50) from float noise. Records: `artifacts/act_verification.json`, `artifacts/baseline_eval.json`.
+Not yet re-run on the L40S.
 
 ---
 
@@ -55,18 +77,22 @@ faact/
   runtime/executor.py       # ChunkExecutor — controllable commitment horizon
   runtime/controller.py     # horizon policies: fixed, score-gated, oracle
   eval/runner.py            # run_episode -> EpisodeResult
+  eval/metrics.py           # success, interventions, horizon, lead time, false alarms
+  labeling/branch_rollout.py  # measure R(s) by snapshot-restore-replay
 scripts/
   00_setup_check.py         # M0 gate
-  02_eval_baseline.py       # M1 gate
-tests/                      # 49 tests; markers `sim` (MuJoCo) and `policy` (checkpoint)
+  01_verify_act_checkpoint.py  # M1 gate — per-seed reproduction of the official eval
+  02_eval_baseline.py       # unperturbed success rate at a fixed horizon
+  03_calibrate_perturbations.py  # M2 gate — magnitude sweep into the 25-65% band
+tests/                      # 68 tests; markers `sim` (MuJoCo) and `policy` (checkpoint)
 docs/
   FAACT_v2_plan.md          # three-day build plan, scope calls, and cuts
   CLAUDE_BUILD_PROMPT.md    # milestone spec this repo is built against
 CLAUDE.md                   # working rules (measurement honesty, no silent fallbacks)
 ```
 
-Not yet written: `labeling/`, `models/`, `eval/metrics.py`, `eval/ablation.py`, `viz/`, and scripts
-`03`–`07`. The Status table above is authoritative.
+Not yet written: `labeling/dataset.py`, `models/reversibility.py`, `eval/ablation.py`, `viz/`, and scripts
+`04`–`07`. The Status table above is authoritative.
 
 ## Setup
 
