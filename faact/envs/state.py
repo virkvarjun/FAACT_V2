@@ -9,6 +9,7 @@ sequences, and every accessor here raises rather than guessing.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -57,23 +58,52 @@ def _mj(env: Any) -> tuple[Any, Any]:
     return physics.model.ptr, physics.data.ptr
 
 
-def snapshot(env: Any) -> np.ndarray:
-    """Capture full integration state as an owned copy.
+@dataclass(frozen=True)
+class SimState:
+    """A complete, restorable snapshot of an episode's state.
 
-    This is *simulator* state only — it excludes wrapper bookkeeping such as the TimeLimit
-    step counter, so callers doing branch rollouts track their own step budget.
+    Two parts, and both are required:
+
+    `physics` — MuJoCo's integration state (see `_state_spec`).
+
+    `elapsed_steps` — gymnasium's `TimeLimit` step counter. This is not an afterthought:
+    the counter lives in a *wrapper*, so restoring physics alone leaves it running. In a
+    branch rollout that means branch 0 gets its full step budget, branch 1 finds the
+    counter already at the limit and is truncated after a single step, and every branch
+    after that too — measured exactly that way before this was fixed. R would then have
+    collapsed to (branch 0 succeeded) / M with no error raised anywhere.
     """
+
+    physics: np.ndarray
+    elapsed_steps: int
+
+
+def _timelimit(env: Any) -> Any:
+    """Find the TimeLimit wrapper that owns the episode step budget."""
+    wrapper = env
+    while wrapper is not None:
+        if hasattr(wrapper, "_elapsed_steps"):
+            return wrapper
+        wrapper = getattr(wrapper, "env", None)
+    raise AttributeError(
+        "no TimeLimit wrapper found in the env chain; snapshot/restore cannot guarantee "
+        "branch independence without it"
+    )
+
+
+def snapshot(env: Any) -> SimState:
+    """Capture everything needed to replay from here: physics plus the step counter."""
     import mujoco
 
     model, data = _mj(env)
     spec = _state_spec()
     buf = np.empty(mujoco.mj_stateSize(model, spec), dtype=np.float64)
     mujoco.mj_getState(model, data, buf, spec)
-    return buf
+    return SimState(physics=buf, elapsed_steps=int(_timelimit(env)._elapsed_steps))
 
 
-def restore(env: Any, state: np.ndarray) -> None:
-    """Restore simulator state and re-derive dependent quantities.
+def restore(env: Any, state: SimState) -> None:
+    """Restore simulator state and the episode step budget, then re-derive derived data.
 
     `forward()` is mandatory: setting the state writes the integrator's inputs but leaves
     derived data (body xpos, contacts, sensors) stale, so an observation read without it
@@ -81,14 +111,22 @@ def restore(env: Any, state: np.ndarray) -> None:
     """
     import mujoco
 
+    if not isinstance(state, SimState):
+        raise TypeError(
+            f"restore expects a SimState from snapshot(), got {type(state).__name__}. "
+            "Restoring raw physics alone leaks the TimeLimit counter across branches."
+        )
+
     model, data = _mj(env)
     spec = _state_spec()
     expected = mujoco.mj_stateSize(model, spec)
-    state = np.ascontiguousarray(state, dtype=np.float64)
-    if state.shape != (expected,):
-        raise ValueError(f"state shape {state.shape} does not match physics state ({expected},)")
-    mujoco.mj_setState(model, data, state, spec)
+    physics = np.ascontiguousarray(state.physics, dtype=np.float64)
+    if physics.shape != (expected,):
+        raise ValueError(f"state shape {physics.shape} does not match physics state ({expected},)")
+
+    mujoco.mj_setState(model, data, physics, spec)
     mujoco.mj_forward(model, data)
+    _timelimit(env)._elapsed_steps = state.elapsed_steps
 
 
 def observe(env: Any) -> dict[str, Any]:
