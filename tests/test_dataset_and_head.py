@@ -268,3 +268,70 @@ def test_select_survives_an_episode_split():
 
     train, _, _ = episode_split(make_grouped_dataset(), fractions=(0.6, 0.2, 0.2))
     assert train.select("minimal").X.shape[1] == 28
+
+
+# -- k-fold cross-validation ------------------------------------------------------------------
+
+
+def test_kfold_holds_every_episode_out_exactly_once():
+    """The property the pooled out-of-fold estimate depends on."""
+    from faact.labeling.dataset import episode_kfold
+
+    data = make_dataset(n_episodes=20)
+    folds = episode_kfold(data, k=5)
+
+    tested = [ep for _, _, test in folds for ep in np.unique(test.episode_id)]
+    assert sorted(tested) == sorted(np.unique(data.episode_id).tolist())
+    assert len(tested) == len(set(tested)), "an episode was tested twice"
+
+
+def test_kfold_never_leaks_an_episode_between_train_and_test():
+    from faact.labeling.dataset import episode_kfold
+
+    for train, val, test in episode_kfold(make_dataset(n_episodes=20), k=5):
+        tr = set(np.unique(train.episode_id).tolist())
+        va = set(np.unique(val.episode_id).tolist())
+        te = set(np.unique(test.episode_id).tolist())
+        assert tr & te == set()
+        assert tr & va == set()
+        assert va & te == set()
+
+
+def test_kfold_pooled_predictions_cover_every_state():
+    """If folds did not cover the data, the pooled Spearman would be computed on a subset."""
+    from faact.labeling.dataset import episode_kfold
+
+    data = make_dataset(n_episodes=20, points_per_episode=8)
+    covered = sum(len(test) for _, _, test in episode_kfold(data, k=5))
+    assert covered == len(data)
+
+
+def test_kfold_is_deterministic_for_a_seed():
+    from faact.labeling.dataset import episode_kfold
+
+    a = [np.unique(t.episode_id).tolist() for _, _, t in episode_kfold(make_dataset(), k=5, seed=3)]
+    b = [np.unique(t.episode_id).tolist() for _, _, t in episode_kfold(make_dataset(), k=5, seed=3)]
+    assert a == b
+
+
+def test_kfold_needs_enough_folds_to_carve_out_validation():
+    from faact.labeling.dataset import episode_kfold
+
+    with pytest.raises(ValueError, match="k >= 3"):
+        episode_kfold(make_dataset(), k=2)
+
+
+def test_kfold_rejects_more_folds_than_episodes():
+    from faact.labeling.dataset import episode_kfold
+
+    with pytest.raises(ValueError, match="cannot fill"):
+        episode_kfold(make_dataset(n_episodes=4), k=5)
+
+
+def test_kfold_carries_feature_slices_so_selection_still_works():
+    from faact.labeling.dataset import episode_kfold
+
+    data = make_grouped_dataset()
+    for train, _, test in episode_kfold(data, k=3):
+        assert train.select("minimal").X.shape[1] == 28
+        assert test.select("minimal").X.shape[1] == 28
