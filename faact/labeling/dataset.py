@@ -1,0 +1,144 @@
+"""Assemble the (features, R) training set, with episode-level splits.
+
+The split rule is the whole point of this file: **an episode's states never straddle two
+splits.** Consecutive states within an episode are enormously correlated — 25 steps apart,
+from the same seed, the same perturbation, and often the same chunk — so a random split
+over *states* puts near-duplicates of the test set into training. That does not merely
+inflate the score; it produces a model that looks calibrated and is useless, which is a
+worse outcome than an obviously bad one.
+
+Standardisation is fit on the training split alone, for the same reason.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from faact.backbone.act_wrapper import concat_features
+
+
+@dataclass
+class ReversibilityDataset:
+    """Flat arrays plus the episode id each row came from."""
+
+    X: np.ndarray  # (n_states, n_features)
+    y: np.ndarray  # (n_states,) reversibility in [0, 1]
+    episode_id: np.ndarray  # (n_states,)
+    timestep: np.ndarray  # (n_states,)
+    onset: np.ndarray  # (n_states,) perturbation onset for the episode, for analysis
+    kind: list[str]  # per-state perturbation kind
+    feature_keys: list[str]
+
+    def __len__(self) -> int:
+        return int(self.X.shape[0])
+
+    @property
+    def n_episodes(self) -> int:
+        return int(np.unique(self.episode_id).size)
+
+    def subset(self, mask: np.ndarray) -> "ReversibilityDataset":
+        mask = np.asarray(mask)
+        return ReversibilityDataset(
+            X=self.X[mask],
+            y=self.y[mask],
+            episode_id=self.episode_id[mask],
+            timestep=self.timestep[mask],
+            onset=self.onset[mask],
+            kind=[k for k, m in zip(self.kind, mask) if m],
+            feature_keys=self.feature_keys,
+        )
+
+
+def load_shards(shard_dir: str | Path, feature_keys: list[str] | None = None) -> ReversibilityDataset:
+    """Build a dataset from the per-episode JSON shards written by script 04."""
+    shard_dir = Path(shard_dir)
+    files = sorted(shard_dir.glob("episode_*.json"))
+    if not files:
+        raise FileNotFoundError(f"no episode shards in {shard_dir}")
+
+    rows_X, rows_y, eps, ts, onsets, kinds = [], [], [], [], [], []
+    for path in files:
+        rec = json.loads(path.read_text())
+        if not rec.get("points"):
+            continue  # excluded episode (ended before onset) — carries no signal
+        onset = rec["perturb"]["onset_step"]
+        for point in rec["points"]:
+            feats = {k: np.asarray(v, dtype=np.float32) for k, v in point["features"].items()}
+            if feature_keys is None:
+                feature_keys = sorted(feats)
+            rows_X.append(concat_features(feats, feature_keys))
+            rows_y.append(float(point["reversibility"]))
+            eps.append(int(rec["seed"]))
+            ts.append(int(point["timestep"]))
+            onsets.append(int(onset))
+            kinds.append(rec["kind"])
+
+    if not rows_X:
+        raise ValueError(f"{len(files)} shards contained no labelled states")
+
+    return ReversibilityDataset(
+        X=np.stack(rows_X).astype(np.float32),
+        y=np.asarray(rows_y, dtype=np.float32),
+        episode_id=np.asarray(eps),
+        timestep=np.asarray(ts),
+        onset=np.asarray(onsets),
+        kind=kinds,
+        feature_keys=list(feature_keys or []),
+    )
+
+
+def episode_split(
+    dataset: ReversibilityDataset,
+    fractions: tuple[float, float, float] = (0.6, 0.2, 0.2),
+    seed: int = 0,
+) -> tuple[ReversibilityDataset, ReversibilityDataset, ReversibilityDataset]:
+    """Split into train/val/test by **episode**, never within one.
+
+    Episodes are shuffled and partitioned, so every state of an episode lands in exactly
+    one split. Raises if any split would come out empty, rather than returning a degenerate
+    set that produces a meaningless validation number.
+    """
+    if not np.isclose(sum(fractions), 1.0):
+        raise ValueError(f"fractions must sum to 1, got {fractions} = {sum(fractions)}")
+
+    episodes = np.unique(dataset.episode_id)
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(episodes)
+
+    n = len(shuffled)
+    n_train = int(round(n * fractions[0]))
+    n_val = int(round(n * fractions[1]))
+    groups = [shuffled[:n_train], shuffled[n_train : n_train + n_val], shuffled[n_train + n_val :]]
+
+    names = ("train", "val", "test")
+    empty = [name for name, g in zip(names, groups) if g.size == 0]
+    if empty:
+        raise ValueError(
+            f"splits {empty} are empty with {n} episodes and fractions {fractions}; "
+            "label more episodes or change the fractions"
+        )
+
+    return tuple(dataset.subset(np.isin(dataset.episode_id, g)) for g in groups)
+
+
+@dataclass
+class Standardiser:
+    """Zero-mean unit-variance scaling, fit on training data only."""
+
+    mean: np.ndarray
+    std: np.ndarray
+
+    @classmethod
+    def fit(cls, X: np.ndarray) -> "Standardiser":
+        mean = X.mean(axis=0)
+        std = X.std(axis=0)
+        # Constant features would divide by zero; leave them at zero rather than blowing up.
+        std[std < 1e-8] = 1.0
+        return cls(mean=mean.astype(np.float32), std=std.astype(np.float32))
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        return ((X - self.mean) / self.std).astype(np.float32)
