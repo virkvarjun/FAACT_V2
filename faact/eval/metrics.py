@@ -23,10 +23,34 @@ import numpy as np
 # Re-exported rather than redefined: one definition of success for the whole repo.
 from faact.eval.runner import EpisodeResult, success_rate  # noqa: F401
 
-# A replan counts as a "reaction" when it commits noticeably less than the full chunk.
-# 50 of a 100-step chunk is the midpoint of the horizon range, so it separates "committed
-# long, business as usual" from "shortened up, something looks wrong".
-REACTION_HORIZON_THRESHOLD = 50
+# A "reaction" is a commitment materially shorter than what this episode started with.
+#
+# Defined relative to the episode's own first horizon rather than against an absolute
+# threshold, because an absolute one is degenerate for constant-horizon policies: with a
+# 50-step cutoff, fixed h=20 scores as "reacting" at every single step of every episode —
+# lead time -106 on 30/30 episodes and a 100% false-alarm rate — purely because 20 < 50.
+# That says nothing about the controller and pollutes the ablation table.
+#
+# Relative framing gives the right answer everywhere: a constant-horizon policy never
+# shortens relative to itself, so it registers no reactions and no false alarms, while an
+# adaptive controller is measured on whether it actually became more cautious.
+REACTION_DROP_FRACTION = 0.5
+
+
+def _reaction_step(result: "EpisodeResult", drop_fraction: float) -> int | None:
+    """Timestep of the first materially-shortened commitment, or None if there was none."""
+    if len(result.horizons) < 2:
+        return None
+    baseline = result.horizons[0]
+    for t, h in zip(result.replan_steps[1:], result.horizons[1:]):
+        if h < drop_fraction * baseline:
+            return t
+    return None
+
+
+def is_adaptive(result: "EpisodeResult") -> bool:
+    """Did the horizon vary at all? Constant-horizon rows get '—' rather than a fake number."""
+    return len(set(result.horizons)) > 1
 
 
 def interventions_per_episode(results: Iterable[EpisodeResult]) -> float:
@@ -49,50 +73,52 @@ def mean_committed_horizon(results: Iterable[EpisodeResult]) -> float:
     return float(np.mean(horizons))
 
 
-def lead_time(result: EpisodeResult, threshold: int = REACTION_HORIZON_THRESHOLD) -> float | None:
-    """Steps from perturbation onset to the controller's first shortened commitment.
+def lead_time(result: EpisodeResult, drop_fraction: float = REACTION_DROP_FRACTION):
+    """Steps from perturbation onset to the controller's first materially-shortened commitment.
 
-    Returns None when the episode was unperturbed or the controller never reacted, so
-    "never reacted" stays distinguishable from "reacted at step 0" — averaging a sentinel
-    like -1 into the mean would silently flatter a controller that mostly ignores onsets.
+    Returns None when the episode was unperturbed, the horizon never varied, or the
+    controller never reacted — so "never reacted" stays distinguishable from "reacted at
+    step 0". Averaging a sentinel like -1 into the mean would silently flatter a controller
+    that mostly ignores onsets.
 
-    A negative value means the horizon shortened *before* onset, which is not prescience:
-    it means the controller was already cautious. Reported as-is rather than clipped.
+    A negative value means the horizon shortened *before* onset. That is not prescience,
+    it is prior caution, and it is reported as-is rather than clipped.
     """
-    if result.perturb is None:
+    if result.perturb is None or not is_adaptive(result):
         return None
-    onset = int(result.perturb["onset_step"])
-    for t, h in zip(result.replan_steps, result.horizons):
-        if h < threshold:
-            return float(t - onset)
-    return None
+    t = _reaction_step(result, drop_fraction)
+    return None if t is None else float(t - int(result.perturb["onset_step"]))
 
 
-def mean_lead_time(results: Iterable[EpisodeResult], threshold: int = REACTION_HORIZON_THRESHOLD):
+def mean_lead_time(results: Iterable[EpisodeResult], drop_fraction: float = REACTION_DROP_FRACTION):
     """Mean lead time over episodes where the controller reacted at all.
 
-    Returns (mean, n_reacted, n_perturbed) so the coverage is always reported alongside
-    the number — a 2-step mean lead time over 3 of 20 episodes is not a good result.
+    Returns (mean, n_reacted, n_perturbed) so coverage is always reported alongside the
+    number — a 2-step mean lead time over 3 of 20 episodes is not a good result.
     """
     results = list(results)
     perturbed = [r for r in results if r.perturb is not None]
-    leads = [lt for r in perturbed if (lt := lead_time(r, threshold)) is not None]
+    leads = [lt for r in perturbed if (lt := lead_time(r, drop_fraction)) is not None]
     mean = float(np.mean(leads)) if leads else float("nan")
     return mean, len(leads), len(perturbed)
 
 
 def false_alarm_rate(
-    results: Iterable[EpisodeResult], threshold: int = REACTION_HORIZON_THRESHOLD
+    results: Iterable[EpisodeResult], drop_fraction: float = REACTION_DROP_FRACTION
 ) -> float:
     """Fraction of *successful* episodes in which the controller shortened its horizon.
 
     On an episode that succeeded, any shortening was unnecessary caution. This is the
-    counterweight to lead time: without it, "always commit h=5" looks optimal.
+    counterweight to lead time: without it, a controller that always shortens would look
+    optimal. Constant-horizon policies never shorten relative to themselves, so they score
+    0% rather than a meaningless 100%.
     """
     successes = [r for r in results if r.success]
     if not successes:
         return float("nan")
-    alarmed = sum(any(h < threshold for h in r.horizons) for r in successes)
+    alarmed = sum(
+        is_adaptive(r) and _reaction_step(r, drop_fraction) is not None for r in successes
+    )
     return alarmed / len(successes)
 
 

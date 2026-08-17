@@ -81,15 +81,37 @@ def test_mean_committed_horizon_raises_when_nothing_replanned():
 
 
 def test_lead_time_measures_steps_from_onset_to_first_short_commitment():
-    # Onset 100; horizons 100,100,20 at steps 0,100,200 -> first reaction at t=200 -> +100.
+    # Onset 100; horizons 100,100,20 at steps 0,100,200. 20 < 0.5*100, so the reaction is
+    # at t=200 -> lead time +100.
     ep = episode(False, [0, 100, 200], [100, 100, 20], onset=100)
     assert lead_time(ep) == pytest.approx(100.0)
+
+
+def test_constant_horizon_policies_register_no_reaction():
+    """The degeneracy this metric was rewritten to remove.
+
+    Under an absolute 50-step threshold, fixed h=20 scored as reacting at every step of
+    every episode (lead time -106 on 30/30, false alarm 100%) purely because 20 < 50 —
+    saying nothing about the controller and polluting the ablation table.
+    """
+    ep = episode(True, [0, 20, 40, 60], [20, 20, 20, 20], onset=100)
+    assert lead_time(ep) is None
+    assert false_alarm_rate([ep]) == pytest.approx(0.0)
+
+    floor = episode(False, [0, 5, 10], [5, 5, 5], onset=100)
+    assert lead_time(floor) is None
 
 
 def test_lead_time_is_negative_when_the_controller_was_already_cautious():
     """Shortening before onset is prior caution, not prescience — reported, not clipped."""
     ep = episode(False, [0, 50, 150], [100, 20, 20], onset=100)
     assert lead_time(ep) == pytest.approx(-50.0)
+
+
+def test_a_mild_shortening_is_not_a_reaction():
+    """Halving is the bar; drifting 100 -> 80 is not the controller getting alarmed."""
+    ep = episode(False, [0, 100, 200], [100, 90, 80], onset=100)
+    assert lead_time(ep) is None
 
 
 def test_lead_time_is_none_when_the_controller_never_reacted():
@@ -107,7 +129,7 @@ def test_mean_lead_time_reports_coverage_alongside_the_mean():
         episode(False, [0, 100, 110], [100, 100, 10], onset=100),  # reacted at +10
         episode(False, [0, 100, 130], [100, 100, 10], onset=100),  # reacted at +30
         episode(True, [0, 100], [100, 100], onset=100),            # never reacted
-        episode(True, [0], [100]),                                 # unperturbed
+        episode(True, [0, 50], [100, 100]),                        # unperturbed
     ]
     mean, n_reacted, n_perturbed = mean_lead_time(eps)
     assert mean == pytest.approx(20.0)
@@ -115,7 +137,7 @@ def test_mean_lead_time_reports_coverage_alongside_the_mean():
 
 
 def test_mean_lead_time_is_nan_when_nothing_ever_reacted():
-    mean, n_reacted, n_perturbed = mean_lead_time([episode(True, [0], [100], onset=50)])
+    mean, n_reacted, n_perturbed = mean_lead_time([episode(True, [0, 100], [100, 100], onset=50)])
     assert np.isnan(mean)
     assert (n_reacted, n_perturbed) == (0, 1)
 
@@ -126,15 +148,15 @@ def test_mean_lead_time_is_nan_when_nothing_ever_reacted():
 def test_false_alarm_rate_counts_shortening_on_successful_episodes():
     eps = [
         episode(True, [0, 100], [100, 10]),   # succeeded but got nervous -> alarm
-        episode(True, [0], [100]),            # succeeded, stayed committed -> no alarm
+        episode(True, [0, 100], [100, 100]),  # succeeded, stayed committed -> no alarm
         episode(False, [0], [10]),            # failed -> not counted either way
     ]
     assert false_alarm_rate(eps) == pytest.approx(0.5)
 
 
-def test_false_alarm_rate_penalises_an_always_cautious_controller():
-    """The counterweight to lead time: commit h=5 always and this goes to 100%."""
-    eps = [episode(True, [0, 5, 10], [5, 5, 5]) for _ in range(4)]
+def test_false_alarm_rate_penalises_a_controller_that_keeps_shortening():
+    """The counterweight to lead time: shorten on every successful episode -> 100%."""
+    eps = [episode(True, [0, 100], [100, 10]) for _ in range(4)]
     assert false_alarm_rate(eps) == pytest.approx(1.0)
 
 
@@ -162,7 +184,7 @@ def test_summarise_produces_every_ablation_field():
 
 
 def test_markdown_table_renders_a_row_per_condition():
-    rows = [summarise([episode(True, [0], [100], onset=50)], label=c)
+    rows = [summarise([episode(True, [0, 100], [100, 100], onset=50)], label=c)
             for c in ("fixed h=100", "reversibility_gated")]
     table = markdown_table(rows)
 

@@ -56,21 +56,28 @@ def load_scorer(head_path: Path):
     return ScorerAdapter(head, std, blob["feature_keys"])
 
 
-def build_conditions(scorer, gamma: float) -> list[Condition]:
-    """The five ablation rows. Gated rows are omitted when no head is available."""
+def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int]):
+    """Ablation rows. Gated rows are omitted when no head is available.
+
+    `h_min` is the floor the gated controller may shorten to, and it matters more than it
+    looks: fixed h=5 measured 0/30 on this task, because ACT emits absolute joint targets
+    and replanning that often — without temporal ensembling — makes each new chunk jump to
+    a different target and the motion falls apart. A gated controller whose floor sits in
+    that regime is penalised for reacting, which inverts the intent.
+    """
     conditions = [
-        Condition("fixed h=100", lambda _seed: fixed(H_MAX), "ACT as published"),
-        Condition("fixed h=20", lambda _seed: fixed(20), "is the gain just replanning more?"),
-        Condition("fixed h=5", lambda _seed: fixed(H_MIN), "floor: replan constantly"),
+        Condition(f"fixed h={h}", (lambda h: lambda _seed: fixed(h))(h), "fixed baseline")
+        for h in fixed_hs
     ]
     if scorer is not None:
-        conditions.append(
-            Condition(
-                f"reversibility_gated (gamma={gamma})",
-                lambda _seed: reversibility_gated(scorer, gamma=gamma),
-                "the claim",
+        for gamma in gammas:
+            conditions.append(
+                Condition(
+                    f"reversibility_gated (gamma={gamma}, h_min={h_min})",
+                    (lambda g: lambda _seed: reversibility_gated(scorer, h_min=h_min, gamma=g))(gamma),
+                    "the claim",
+                )
             )
-        )
     return conditions
 
 
@@ -79,7 +86,10 @@ def main() -> int:
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--seed", type=int, default=3000, help="first episode seed")
     ap.add_argument("--kinds", nargs="*", default=list(KINDS))
-    ap.add_argument("--gamma", type=float, default=1.0)
+    ap.add_argument("--gammas", type=float, nargs="*", default=[1.0])
+    ap.add_argument("--h-min", type=int, default=H_MIN,
+                    help="floor for the gated horizon; 5 is the measured collapse regime")
+    ap.add_argument("--fixed-hs", type=int, nargs="*", default=[100, 20, 5])
     ap.add_argument("--head", default=str(ARTIFACTS / "reversibility_head.pt"))
     ap.add_argument("--skip-gated", action="store_true")
     ap.add_argument("--max-steps", type=int, default=MAX_EPISODE_STEPS)
@@ -98,7 +108,7 @@ def main() -> int:
         episodes.append((seed, sample_spec(kind, rng, onset_range=ONSET_RANGE)))
 
     scorer = None if args.skip_gated else load_scorer(Path(args.head))
-    conditions = build_conditions(scorer, args.gamma)
+    conditions = build_conditions(scorer, args.gammas, args.h_min, args.fixed_hs)
 
     policy = ACTWrapper(CHECKPOINT, device="cpu")
     env = make_env()
@@ -129,7 +139,8 @@ def main() -> int:
         "gate": "M5",
         "n_episodes_common": n_common,
         "n_episodes_requested": args.episodes,
-        "gamma": args.gamma,
+        "gammas": args.gammas,
+        "h_min": args.h_min,
         "onset_range": ONSET_RANGE,
         "seeds": [args.seed, args.seed + args.episodes - 1],
         "gated_included": scorer is not None,
@@ -151,7 +162,7 @@ def main() -> int:
         f"MILESTONE: M5\n"
         f"GATE: {'PASS' if rows else 'FAIL'} (table produced with n stated)\n"
         f"MEASURED: n={n_common} common episodes, seeds {args.seed}-"
-        f"{args.seed + args.episodes - 1}, gamma={args.gamma}\n"
+        f"{args.seed + args.episodes - 1}, gammas={args.gammas}, h_min={args.h_min}\n"
         f"          gated conditions {'included' if scorer else 'SKIPPED (no head)'}\n"
         f"WALL CLOCK: {t['seconds'] / 60:.1f} min\n"
         f"FILES: {out}, {ARTIFACTS / 'ablation_table.md'}"
