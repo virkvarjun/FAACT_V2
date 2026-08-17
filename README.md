@@ -22,28 +22,51 @@ measured; empty cells mean not yet run.
 |---|---|---|---|
 | M-init | Repo, packaging, docs | — | ✅ done |
 | M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS (macOS dev box; not yet run on the L40S) |
-| M1 | ACT checkpoint + honest baseline | unperturbed success ≥ 60% over 20 eps | ⬜ not started |
+| M1 | ACT checkpoint + honest baseline | unperturbed success ≥ 60% over 20 eps | ✅ **13/20 = 65%** |
 | M2 | Perturbation suite | perturbed success in 25–65% band | ⬜ not started |
 | M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ⬜ not started |
 | M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ⬜ not started |
 | M5 | Horizon control + ablation | 5-condition table, n stated | ⬜ not started |
 | M6 | Figures | — | ⬜ not started |
 
-**No results have been measured yet.** When they are, numbers land in `artifacts/` and are summarised here.
+### M1 baseline, measured
+
+`lerobot/act_aloha_sim_transfer_cube_human` loads directly against lerobot 0.3.2 — **no ACT training was
+needed**. Evaluated unperturbed at fixed h=100, seeds 1000–1019:
+
+| n | success | wall clock | device |
+|---|---|---|---|
+| 20 | **13/20 = 65%** | 86s (4.3 s/ep) | mps (macOS dev box) |
+
+Failures are graded, not degenerate: the 7 failures reached reward 1–2 of 4 (approach and grasp, no
+transfer). 65% leaves the headroom that v1's 0/20 did not. Full per-episode records:
+`artifacts/baseline_eval.json`. Not yet re-run on the L40S.
 
 ---
 
 ## What exists right now
 
 ```
-faact/                 # (being built — see Status)
-scripts/               # numbered entry points, one per milestone
-tests/                 # pytest; sim-dependent tests are marked `sim`
+faact/
+  backbone/act_wrapper.py   # ACT chunk prediction + forward-hook feature extraction
+  envs/make.py              # env factory, ALOHA constants
+  envs/perturb.py           # 4 perturbation kinds + specs
+  envs/state.py             # snapshot / restore / re-observe / cube teleport
+  runtime/executor.py       # ChunkExecutor — controllable commitment horizon
+  runtime/controller.py     # horizon policies: fixed, score-gated, oracle
+  eval/runner.py            # run_episode -> EpisodeResult
+scripts/
+  00_setup_check.py         # M0 gate
+  02_eval_baseline.py       # M1 gate
+tests/                      # 49 tests; markers `sim` (MuJoCo) and `policy` (checkpoint)
 docs/
-  FAACT_v2_plan.md     # three-day build plan, scope calls, and cuts
-  CLAUDE_BUILD_PROMPT.md  # milestone spec this repo is built against
-CLAUDE.md              # working rules (measurement honesty, no silent fallbacks)
+  FAACT_v2_plan.md          # three-day build plan, scope calls, and cuts
+  CLAUDE_BUILD_PROMPT.md    # milestone spec this repo is built against
+CLAUDE.md                   # working rules (measurement honesty, no silent fallbacks)
 ```
+
+Not yet written: `labeling/`, `models/`, `eval/metrics.py`, `eval/ablation.py`, `viz/`, and scripts
+`03`–`07`. The Status table above is authoritative.
 
 ## Setup
 

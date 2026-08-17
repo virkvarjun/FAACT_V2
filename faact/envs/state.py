@@ -91,6 +91,23 @@ def restore(env: Any, state: np.ndarray) -> None:
     mujoco.mj_forward(model, data)
 
 
+def observe(env: Any) -> dict[str, Any]:
+    """Re-derive the current observation *without stepping the simulator*.
+
+    Needed at two points where the world changes outside `env.step`:
+      - after `object_displace` teleports the cube, so the policy sees the moved cube
+        rather than a stale frame from before the disturbance;
+      - after `restore`, so a branch rollout starts from an observation of the state it
+        was actually restored to.
+
+    Reaches through the gym wrapper to the task's own observation function, so the result
+    is byte-identical to what `env.step` would have returned (verified in tests).
+    """
+    inner = getattr(env, "unwrapped", env)
+    raw = inner._env.task.get_observation(physics_of(env))
+    return inner._format_raw_obs(raw)
+
+
 def free_joint_qpos_slice(physics: Any) -> slice:
     """Locate the qpos entries of the scene's single free body (the red cube).
 
