@@ -21,7 +21,7 @@ measured; empty cells mean not yet run.
 | Milestone | What it delivers | Gate | Status |
 |---|---|---|---|
 | M-init | Repo, packaging, docs | — | ✅ done |
-| M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ⬜ not started |
+| M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS (macOS dev box; not yet run on the L40S) |
 | M1 | ACT checkpoint + honest baseline | unperturbed success ≥ 60% over 20 eps | ⬜ not started |
 | M2 | Perturbation suite | perturbed success in 25–65% band | ⬜ not started |
 | M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ⬜ not started |
@@ -56,15 +56,21 @@ uv pip install -e ".[dev]"
 python scripts/00_setup_check.py     # must print PASS for every check
 ```
 
-Headless boxes (RunPod) need EGL for MuJoCo rendering:
+Two system-level dependencies that the setup check exists to catch early:
 
-```bash
-export MUJOCO_GL=egl        # apt-get install -y libegl1 libgles2 libglvnd0
-```
+| Platform | Needed | Why |
+|---|---|---|
+| RunPod (Linux) | `apt-get install -y libegl1 libgles2 libglvnd0 ffmpeg libav*-dev`, `export MUJOCO_GL=egl` | headless MuJoCo rendering, and torchcodec's FFmpeg bindings |
+| macOS (dev) | `brew install ffmpeg`, `export DYLD_LIBRARY_PATH=/opt/homebrew/lib` | torchcodec's `@rpath` resolves against the Python prefix, not brew's libdir, so the install alone is not enough |
+
+A static FFmpeg CLI binary on `PATH` does **not** satisfy this — torchcodec needs the shared libraries.
+lerobot's `pyav` backend is not an alternative: it routes through `torchvision.io.VideoReader`, which current
+torchvision no longer ships.
 
 `lerobot` is a **pip dependency, not a git submodule** — v1 pinned a submodule commit that did not exist in
-the upstream repo, so a fresh clone could not be set up at all. Exact resolved versions are recorded in
-`requirements.lock.txt` once the environment is first built.
+the upstream repo, so a fresh clone could not be set up at all. Resolved versions are in
+`requirements.lock.txt`; the load-bearing ones are `lerobot 0.3.2`, `gym-aloha 0.1.3`, `mujoco 3.11.0`,
+`gymnasium 0.29.1`, `torch 2.13.0`, `numpy 1.26.4`.
 
 ## Relation to prior work
 
