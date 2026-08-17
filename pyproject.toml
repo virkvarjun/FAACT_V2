@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faact"
+version = "0.2.0"
+description = "Reversibility-gated execution horizons for chunked imitation policies (ACT / ALOHA sim)"
+requires-python = ">=3.10,<3.11"
+
+# Runtime deps are deliberately unpinned here except where a pin is load-bearing.
+# Exact resolved versions are recorded in requirements.lock.txt (see README).
+dependencies = [
+    "numpy>=1.24,<2.0",       # lerobot/mujoco stack is not fully numpy-2 clean
+    "torch>=2.2",
+    "gymnasium>=0.29",
+    "mujoco>=3.1",
+    "gym-aloha>=0.1.1",
+    "shimmy[gym-v26]>=1.3",   # gym-aloha still speaks the Gym v0.26 API
+    "lerobot",                # pip dependency, NOT a submodule — see README
+    "scipy>=1.11",            # spearmanr for the M4 gate
+    "matplotlib>=3.8",
+    "imageio[ffmpeg]>=2.34",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-timeout>=2.3"]
+
+[tool.setuptools.packages.find]
+include = ["faact*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Simulator tests are slow; a hung MuJoCo call should fail rather than block CI.
+timeout = 600
+markers = [
+    "sim: requires a working MuJoCo / gym-aloha install",
+    "policy: requires a trained ACT checkpoint",
+]

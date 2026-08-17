@@ -1,0 +1,20 @@
+# Experiment outputs — regenerable, and large. Never commit these.
+artifacts/
+outputs/
+checkpoints/
+*.pt
+*.safetensors
+*.npz
+*.mp4
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
