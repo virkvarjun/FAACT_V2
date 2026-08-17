@@ -137,6 +137,11 @@ def main() -> int:
         "thermal": governor.report(),
         "rows": rows,
         "exclusions": {k: v for k, v in exclusions.items()},
+        # Per-episode traces, kept so figure 3 (committed horizon vs. onset) and the
+        # side-by-side videos can be built without re-running the whole ablation.
+        "episodes": {
+            name: [r.to_record() for r in results] for name, results in aligned.items()
+        },
     }
     out = write_json(args.out, payload)
     (ARTIFACTS / "ablation_table.md").write_text(table + "\n")
