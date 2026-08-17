@@ -21,6 +21,29 @@ import numpy as np
 from faact.backbone.act_wrapper import concat_features
 
 
+# Feature groups, so the head can be trained on a subset without re-extracting anything.
+#
+# This exists because of a measured problem: the full vector is 1206-d (two 512-d
+# transformer poolings plus 182-d of action/state features), while 40 episodes at stride 25
+# yield only ~300 training states. Ten times more dimensions than samples overfits hard —
+# first dry run gave train Spearman 0.76 against test 0.26. Which group actually carries
+# the signal is then an empirical question worth reporting rather than assuming.
+FEATURE_GROUPS: dict[str, list[str] | None] = {
+    # Cheap, low-dimensional, and available without any hook: 182-d.
+    "cheap": [
+        "feat_state",
+        "feat_action_first",
+        "feat_action_prefix_mean_10",
+        "feat_action_prefix_flat_10",
+    ],
+    # ACT's internal representation: 1024-d.
+    "transformer": ["feat_encoder_mean", "feat_decoder_mean"],
+    # Smallest sensible set: where the arm is and what it is about to do. 28-d.
+    "minimal": ["feat_state", "feat_action_first"],
+    "all": None,
+}
+
+
 @dataclass
 class ReversibilityDataset:
     """Flat arrays plus the episode id each row came from."""
@@ -32,6 +55,44 @@ class ReversibilityDataset:
     onset: np.ndarray  # (n_states,) perturbation onset for the episode, for analysis
     kind: list[str]  # per-state perturbation kind
     feature_keys: list[str]
+    # Column span of each feature key in X, so a group can be sliced out after loading.
+    feature_slices: dict[str, slice] = None  # type: ignore[assignment]
+
+    def select(self, group: str) -> "ReversibilityDataset":
+        """Return a copy keeping only the columns of one feature group."""
+        if group not in FEATURE_GROUPS:
+            raise ValueError(f"unknown feature group {group!r}; have {sorted(FEATURE_GROUPS)}")
+        keys = FEATURE_GROUPS[group]
+        if keys is None:
+            return self
+        if self.feature_slices is None:
+            raise RuntimeError("dataset has no feature_slices; rebuild it with load_shards()")
+
+        missing = [k for k in keys if k not in self.feature_slices]
+        if missing:
+            raise KeyError(f"feature group {group!r} needs {missing}, absent from the labels")
+
+        keys = [k for k in self.feature_keys if k in set(keys)]  # keep canonical order
+        cols = np.concatenate([np.arange(self.feature_slices[k].start,
+                                         self.feature_slices[k].stop) for k in keys])
+        out = ReversibilityDataset(
+            X=self.X[:, cols],
+            y=self.y,
+            episode_id=self.episode_id,
+            timestep=self.timestep,
+            onset=self.onset,
+            kind=self.kind,
+            feature_keys=keys,
+            feature_slices=None,
+        )
+        # Recompute spans for the narrowed matrix so select() stays composable.
+        start, spans = 0, {}
+        for k in keys:
+            width = self.feature_slices[k].stop - self.feature_slices[k].start
+            spans[k] = slice(start, start + width)
+            start += width
+        out.feature_slices = spans
+        return out
 
     def __len__(self) -> int:
         return int(self.X.shape[0])
@@ -50,6 +111,7 @@ class ReversibilityDataset:
             onset=self.onset[mask],
             kind=[k for k, m in zip(self.kind, mask) if m],
             feature_keys=self.feature_keys,
+            feature_slices=self.feature_slices,
         )
 
 
@@ -61,6 +123,7 @@ def load_shards(shard_dir: str | Path, feature_keys: list[str] | None = None) ->
         raise FileNotFoundError(f"no episode shards in {shard_dir}")
 
     rows_X, rows_y, eps, ts, onsets, kinds = [], [], [], [], [], []
+    last_feats: dict = {}
     for path in files:
         rec = json.loads(path.read_text())
         if not rec.get("points"):
@@ -71,6 +134,7 @@ def load_shards(shard_dir: str | Path, feature_keys: list[str] | None = None) ->
             if feature_keys is None:
                 feature_keys = sorted(feats)
             rows_X.append(concat_features(feats, feature_keys))
+            last_feats = feats
             rows_y.append(float(point["reversibility"]))
             eps.append(int(rec["seed"]))
             ts.append(int(point["timestep"]))
@@ -80,6 +144,13 @@ def load_shards(shard_dir: str | Path, feature_keys: list[str] | None = None) ->
     if not rows_X:
         raise ValueError(f"{len(files)} shards contained no labelled states")
 
+    # Column span of each key, matching concat_features' sorted-key order.
+    spans, start = {}, 0
+    for key in feature_keys:
+        width = int(np.asarray(last_feats[key]).size)
+        spans[key] = slice(start, start + width)
+        start += width
+
     return ReversibilityDataset(
         X=np.stack(rows_X).astype(np.float32),
         y=np.asarray(rows_y, dtype=np.float32),
@@ -88,6 +159,7 @@ def load_shards(shard_dir: str | Path, feature_keys: list[str] | None = None) ->
         onset=np.asarray(onsets),
         kind=kinds,
         feature_keys=list(feature_keys or []),
+        feature_slices=spans,
     )
 
 

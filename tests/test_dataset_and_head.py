@@ -194,3 +194,77 @@ def test_scorer_adapter_bundles_standardisation_with_the_model():
     scorer = ScorerAdapter(head, std, keys)
     r = scorer.predict_one({"feat_a": np.array([10.0, 11.0]), "feat_b": np.array([9.0])})
     assert 0.0 <= r <= 1.0
+
+
+# -- feature groups -------------------------------------------------------------------------
+
+
+def make_grouped_dataset():
+    """A dataset whose feature_slices mirror the real ones, for group selection."""
+    from faact.labeling.dataset import ReversibilityDataset
+
+    widths = {"feat_action_first": 14, "feat_action_prefix_flat_10": 140,
+              "feat_action_prefix_mean_10": 14, "feat_decoder_mean": 512,
+              "feat_encoder_mean": 512, "feat_state": 14}
+    keys = sorted(widths)
+    spans, start = {}, 0
+    for k in keys:
+        spans[k] = slice(start, start + widths[k])
+        start += widths[k]
+
+    n = 40
+    return ReversibilityDataset(
+        X=np.arange(n * start, dtype=np.float32).reshape(n, start),
+        y=np.linspace(0, 1, n).astype(np.float32),
+        episode_id=np.repeat(np.arange(5), 8),
+        timestep=np.tile(np.arange(8) * 25, 5),
+        onset=np.repeat(100, n),
+        kind=["grasp_slip"] * n,
+        feature_keys=keys,
+        feature_slices=spans,
+    )
+
+
+def test_feature_groups_have_the_expected_widths():
+    data = make_grouped_dataset()
+    assert data.X.shape[1] == 1206
+    assert data.select("all").X.shape[1] == 1206
+    assert data.select("transformer").X.shape[1] == 1024
+    assert data.select("cheap").X.shape[1] == 182
+    assert data.select("minimal").X.shape[1] == 28
+
+
+def test_selected_columns_are_the_right_ones():
+    """Slicing must take each key's actual span, not an arbitrary prefix."""
+    data = make_grouped_dataset()
+    picked = data.select("minimal")
+    expected = np.concatenate([
+        data.X[:, data.feature_slices["feat_action_first"]],
+        data.X[:, data.feature_slices["feat_state"]],
+    ], axis=1)
+    np.testing.assert_array_equal(picked.X, expected)
+
+
+def test_select_is_composable():
+    data = make_grouped_dataset()
+    assert data.select("cheap").select("minimal").X.shape[1] == 28
+
+
+def test_select_preserves_labels_and_episodes():
+    data = make_grouped_dataset()
+    picked = data.select("cheap")
+    np.testing.assert_array_equal(picked.y, data.y)
+    np.testing.assert_array_equal(picked.episode_id, data.episode_id)
+
+
+def test_select_rejects_an_unknown_group():
+    with pytest.raises(ValueError, match="unknown feature group"):
+        make_grouped_dataset().select("nonsense")
+
+
+def test_select_survives_an_episode_split():
+    """subset() must carry feature_slices through, or selection breaks after splitting."""
+    from faact.labeling.dataset import episode_split
+
+    train, _, _ = episode_split(make_grouped_dataset(), fractions=(0.6, 0.2, 0.2))
+    assert train.select("minimal").X.shape[1] == 28

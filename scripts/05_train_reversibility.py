@@ -28,7 +28,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from faact.labeling.dataset import Standardiser, episode_split, load_shards  # noqa: E402
+from faact.labeling.dataset import (  # noqa: E402
+    FEATURE_GROUPS,
+    Standardiser,
+    episode_split,
+    load_shards,
+)
 from faact.models.reversibility import ReversibilityHead, evaluate, train_head  # noqa: E402
 from faact.utils import ARTIFACTS, timed, write_json  # noqa: E402
 
@@ -84,33 +89,72 @@ def main() -> int:
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--feature-sets", nargs="*", default=None,
+                    help=f"subset of {sorted(FEATURE_GROUPS)}; default sweeps all")
     ap.add_argument("--split-seed", type=int, default=0)
     ap.add_argument("--out", default="reversibility_training.json")
     args = ap.parse_args()
 
-    data = load_shards(args.shards)
-    print(f"loaded {len(data)} labelled states from {data.n_episodes} episodes, "
-          f"feature dim {data.X.shape[1]}")
-    print(f"R distribution: mean {data.y.mean():.3f}, "
-          f"fraction exactly 0 or 1: {np.mean(np.isin(data.y, [0.0, 1.0])):.2f}")
+    full = load_shards(args.shards)
+    print(f"loaded {len(full)} labelled states from {full.n_episodes} episodes, "
+          f"feature dim {full.X.shape[1]}")
+    print(f"R distribution: mean {full.y.mean():.3f}, "
+          f"fraction exactly 0 or 1: {np.mean(np.isin(full.y, [0.0, 1.0])):.2f}")
 
-    train, val, test = episode_split(data, seed=args.split_seed)
+    groups = args.feature_sets or list(FEATURE_GROUPS)
+    sweep = []
+    best = None
+
+    # Sweep feature groups and select on VALIDATION. The full 1206-d vector has ~10x more
+    # dimensions than we have training states, so which subset generalises is an empirical
+    # question — but choosing it on test would make the reported number meaningless.
+    for group in groups:
+        data = full.select(group)
+        train, val, test = episode_split(data, seed=args.split_seed)
+        std = Standardiser.fit(train.X)
+        Xtr, Xva, Xte = (std.transform(s.X) for s in (train, val, test))
+
+        head = ReversibilityHead(input_dim=data.X.shape[1], dropout=args.dropout)
+        with timed(f"head training [{group}]") as t:
+            result = train_head(
+                head, Xtr, train.y, Xva, val.y,
+                epochs=args.epochs, patience=args.patience, lr=args.lr,
+                weight_decay=args.weight_decay, seed=args.split_seed,
+            )
+        metrics = {
+            split: evaluate(head, X, s.y)
+            for split, X, s in (("train", Xtr, train), ("val", Xva, val), ("test", Xte, test))
+        }
+        row = {
+            "feature_set": group,
+            "dim": int(data.X.shape[1]),
+            "train_spearman": metrics["train"]["spearman"],
+            "val_spearman": metrics["val"]["spearman"],
+            "test_spearman": metrics["test"]["spearman"],
+            "test_mae": metrics["test"]["mae"],
+            "epochs_run": result.epochs_run,
+        }
+        sweep.append(row)
+        print(f"  {group:<12} dim {row['dim']:>5}   "
+              f"spearman train {row['train_spearman']:+.3f}  val {row['val_spearman']:+.3f}  "
+              f"test {row['test_spearman']:+.3f}   mae {row['test_mae']:.3f}", flush=True)
+
+        # nan-safe comparison: a degenerate split must never win the selection.
+        val_score = row["val_spearman"]
+        if best is None or (np.isfinite(val_score) and val_score > best["row"]["val_spearman"]):
+            best = {"row": row, "head": head, "std": std, "data": data, "metrics": metrics,
+                    "result": result, "splits": (train, val, test), "Xte": Xte}
+
+    assert best is not None
+    train, val, test = best["splits"]
+    head, std, data = best["head"], best["std"], best["data"]
+    metrics, result = best["metrics"], best["result"]
+    Xte = best["Xte"]
+    print(f"\nselected feature set '{best['row']['feature_set']}' on validation "
+          f"(val Spearman {best['row']['val_spearman']:.3f})")
     print(f"episodes  train {train.n_episodes} / val {val.n_episodes} / test {test.n_episodes}"
           f"   states  {len(train)} / {len(val)} / {len(test)}")
-
-    # Fit standardisation on training states only — the same leakage rule as the split.
-    std = Standardiser.fit(train.X)
-    Xtr, Xva, Xte = (std.transform(s.X) for s in (train, val, test))
-
-    head = ReversibilityHead(input_dim=data.X.shape[1], dropout=args.dropout)
-    with timed("head training") as t:
-        result = train_head(
-            head, Xtr, train.y, Xva, val.y,
-            epochs=args.epochs, patience=args.patience, lr=args.lr, seed=args.split_seed,
-        )
-
-    metrics = {split: evaluate(head, X, s.y)
-               for split, X, s in (("train", Xtr, train), ("val", Xva, val), ("test", Xte, test))}
 
     # Baseline: always predict the training mean. If the head cannot beat this on MAE it
     # has learned nothing, however good its correlation happens to look.
@@ -123,6 +167,7 @@ def main() -> int:
         {
             "state_dict": head.state_dict(),
             "input_dim": int(data.X.shape[1]),
+            "feature_set": best["row"]["feature_set"],
             "feature_keys": data.feature_keys,
             "mean": std.mean,
             "std": std.std,
@@ -137,6 +182,8 @@ def main() -> int:
         "passed": passed,
         "metrics": metrics,
         "predict_mean_baseline_mae": mean_mae,
+        "feature_set": best["row"]["feature_set"],
+        "feature_sweep": sweep,
         "n_states": len(data),
         "n_episodes": data.n_episodes,
         "split_states": {"train": len(train), "val": len(val), "test": len(test)},
@@ -158,7 +205,8 @@ def main() -> int:
         f"          predict-the-mean baseline MAE {mean_mae:.3f} "
         f"({'beaten' if metrics['test']['mae'] < mean_mae else 'NOT BEATEN'})\n"
         f"          val Spearman {metrics['val']['spearman']:.3f}, "
-        f"train Spearman {metrics['train']['spearman']:.3f}\n"
+        f"train Spearman {metrics['train']['spearman']:.3f}  "
+        f"[feature set '{best['row']['feature_set']}', dim {data.X.shape[1]}]\n"
         f"WALL CLOCK: {t['seconds']:.1f}s ({result.epochs_run} epochs, "
         f"best at {result.best_epoch})\n"
         f"FILES: {out}, {fig_path}, {ARTIFACTS / 'reversibility_head.pt'}"
