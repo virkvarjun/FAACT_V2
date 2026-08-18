@@ -335,3 +335,41 @@ def test_kfold_carries_feature_slices_so_selection_still_works():
     for train, _, test in episode_kfold(data, k=3):
         assert train.select("minimal").X.shape[1] == 28
         assert test.select("minimal").X.shape[1] == 28
+
+
+# -- dataset mixing guard --------------------------------------------------------------------
+
+
+def write_shard(dirpath, seed, kind, config, r=0.5):
+    rec = {"seed": seed, "kind": kind, "perturb": {"onset_step": 100},
+           "points": [{"timestep": 25, "reversibility": r,
+                       "features": {"feat_a": [1.0, 2.0], "feat_b": [3.0]}}]}
+    (dirpath / f"episode_{seed}_{kind}_{config}.json").write_text(json.dumps(rec))
+
+
+def test_mixing_perturbation_kinds_is_allowed(tmp_path):
+    """Kinds are assigned round-robin, so several in one directory is the normal case."""
+    cfg = "s25_m8_n0.01_h100_t400_o150-280_gNone"
+    write_shard(tmp_path, 1, "object_displace", cfg)
+    write_shard(tmp_path, 2, "actuation_noise", cfg)
+    write_shard(tmp_path, 3, "grasp_slip", cfg)
+    assert load_shards(tmp_path).n_episodes == 3
+
+
+def test_mixing_labelling_configs_is_refused(tmp_path):
+    """A killed run's workers once wrote corrected-onset episodes into the old dataset.
+
+    Concatenating them would train a model on a mixture nobody chose, with no complaint.
+    """
+    write_shard(tmp_path, 1, "object_displace", "s25_m8_n0.01_h100_t400_o40-160_gNone")
+    write_shard(tmp_path, 2, "object_displace", "s25_m8_n0.01_h100_t400_o150-280_gNone")
+    with pytest.raises(ValueError, match="different labelling configurations"):
+        load_shards(tmp_path)
+
+
+def test_differing_branch_count_is_also_refused(tmp_path):
+    """Any setting that changes what R means must separate the datasets, not just onset."""
+    write_shard(tmp_path, 1, "object_displace", "s25_m8_n0.01_h100_t400_o150-280_gNone")
+    write_shard(tmp_path, 2, "object_displace", "s25_m4_n0.01_h100_t400_o150-280_gNone")
+    with pytest.raises(ValueError, match="different labelling configurations"):
+        load_shards(tmp_path)

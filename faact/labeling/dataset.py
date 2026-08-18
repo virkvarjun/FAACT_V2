@@ -13,6 +13,7 @@ Standardisation is fit on the training split alone, for the same reason.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,6 +122,22 @@ def load_shards(shard_dir: str | Path, feature_keys: list[str] | None = None) ->
     files = sorted(shard_dir.glob("episode_*.json"))
     if not files:
         raise FileNotFoundError(f"no episode shards in {shard_dir}")
+
+    # Refuse to silently blend datasets. The filename carries the settings the labels were
+    # measured under (stride, branches, noise, onset window, magnitude); shards from two
+    # different configurations in one directory would be concatenated without complaint and
+    # the resulting model trained on a mixture nobody chose. This happened: a killed run's
+    # in-flight workers wrote corrected-onset episodes into the previous dataset's folder.
+    # Compare only the labelling settings, which begin at the "s<stride>" token. The kind
+    # precedes it and legitimately varies — episodes are assigned kinds round-robin.
+    configs = {m.group(1) for f in files if (m := re.search(r"_(s\d+_m\d+_n[\d.]+_h\d+_t\d+.*)$", f.stem))}
+    if len(configs) > 1:
+        listing = "\n  ".join(sorted(configs))
+        raise ValueError(
+            f"{shard_dir} holds shards from {len(configs)} different labelling "
+            f"configurations:\n  {listing}\n"
+            "Separate them before training — a mixed dataset is not a dataset."
+        )
 
     rows_X, rows_y, eps, ts, onsets, kinds = [], [], [], [], [], []
     last_feats: dict = {}
