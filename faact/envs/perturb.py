@@ -31,11 +31,14 @@ KINDS = ("object_displace", "grasp_slip", "actuation_noise", "occlusion")
 # until perturbed success lands in the 25-65% band, and the tuned values are written to
 # artifacts/perturbation_calibration.json.
 DEFAULTS: dict[str, dict[str, float]] = {
-    # metres of planar cube displacement (the plan's 2-5 cm), applied on a single step
-    "object_displace": {"magnitude": 0.035, "duration": 1},
+    # Metres of planar cube displacement, applied on a single step. 0.02 is the calibrated
+    # value from the corrected-onset sweep: 42% success, a 23pp drop. 0.035 measured 11%,
+    # which is past the floor and leaves no headroom.
+    "object_displace": {"magnitude": 0.02, "duration": 1},
     # gripper held open; magnitude is unused (the open value comes from the action space)
     "grasp_slip": {"magnitude": 1.0, "duration": 3},
-    # std-dev of Gaussian noise added to normalised joint targets, over a 20-step window
+    # Std-dev of Gaussian noise on normalised joint targets over a 20-step window. 0.05 is
+    # the calibrated value: 37% success, a 28pp drop.
     "actuation_noise": {"magnitude": 0.05, "duration": 20},
     # fraction of image *area* blacked out, over a 20-step window
     "occlusion": {"magnitude": 0.15, "duration": 20},

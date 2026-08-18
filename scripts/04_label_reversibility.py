@@ -69,10 +69,18 @@ log = logging.getLogger("faact.label")
 
 
 def label_config_key(job: dict) -> str:
-    """Short identifier for the settings that determine an episode's labels."""
+    """Short identifier for every setting that determines an episode's labels.
+
+    Includes the onset window and magnitude, not just the rollout parameters. They were
+    missing at first, which meant changing the perturbation itself would silently serve
+    labels measured under the *old* disturbance — the same invisible-stale-cache failure
+    the seed-only key had, one level down.
+    """
+    onset = f"{job['onset_range'][0]}-{job['onset_range'][1]}"
     return (
         f"{job['kind']}_s{job['stride']}_m{job['branches']}"
         f"_n{job['branch_noise']}_h{job['horizon']}_t{job['max_steps']}"
+        f"_o{onset}_g{job['magnitude']}"
     )
 
 
@@ -88,7 +96,10 @@ def label_episode(job: dict) -> dict:
     # The shard key includes every setting that changes the labels, not just the seed.
     # Keying on seed alone would silently reuse labels from a different --branches or
     # --branch-noise, which is the worst kind of stale cache: invisible and wrong.
-    shard = SHARD_DIR / f"episode_{seed}_{label_config_key(job)}.json"
+    # Taken from the job, not from a module global: 'spawn' workers re-import this module,
+    # so a global set in main() never reaches them and every shard would silently land in
+    # the default directory. That happened, and mixed two datasets in one folder.
+    shard = Path(job["shard_dir"]) / f"episode_{seed}_{label_config_key(job)}.json"
     if shard.exists() and not job["restart"]:
         return {"seed": seed, "cached": True, **json.loads(shard.read_text())}
 
@@ -99,7 +110,8 @@ def label_episode(job: dict) -> dict:
 
     try:
         rng = np.random.default_rng(seed)
-        spec = sample_spec(job["kind"], rng, onset_range=ONSET_RANGE)
+        spec = sample_spec(job["kind"], rng, onset_range=tuple(job["onset_range"]),
+                           magnitude=job["magnitude"])
 
         # Walk the episode, pausing at every `stride`-th step to measure R there. The
         # callback fires before the action is taken, so features and R describe the same
@@ -180,10 +192,16 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=None,
                     help="default: performance cores - 1, to leave the machine usable")
     ap.add_argument("--poll-seconds", type=float, default=15.0)
+    ap.add_argument("--magnitude", type=float, default=None,
+                    help="override the calibrated per-kind magnitude")
+    ap.add_argument("--shard-dir", default=None,
+                    help="write shards here instead of the default directory")
     ap.add_argument("--restart", action="store_true", help="ignore existing episode shards")
     ap.add_argument("--out", default="reversibility_labels.json")
     args = ap.parse_args()
 
+    shard_dir = Path(args.shard_dir) if args.shard_dir else SHARD_DIR
+    shard_dir.mkdir(parents=True, exist_ok=True)
     workers = safe_worker_count(args.workers)
     seeds = [args.seed + i for i in range(args.episodes)]
     # Perturbation kinds are assigned round-robin so the dataset is balanced across them
@@ -199,6 +217,10 @@ def main() -> int:
             "max_steps": args.max_steps,
             "restart": args.restart,
             "poll_seconds": args.poll_seconds,
+            "shard_dir": str(shard_dir),
+            "onset_range": list(ONSET_RANGE),
+            # None keeps the calibrated per-kind default from faact.envs.perturb.
+            "magnitude": args.magnitude,
         }
         for i, seed in enumerate(seeds)
     ]
@@ -207,7 +229,7 @@ def main() -> int:
     print(
         f"labelling {len(jobs)} episodes x ~{approx_points} points x {args.branches} branches\n"
         f"workers={workers} (performance cores available: {safe_worker_count(reserve=0)})  "
-        f"thermal state now: {thermal_state()}  shards: {SHARD_DIR}\n"
+        f"thermal state now: {thermal_state()}  shards: {shard_dir}\n"
     )
 
     records = []
@@ -288,7 +310,7 @@ def main() -> int:
         f"WALL CLOCK: {t['seconds'] / 60:.1f} min at {workers} workers, "
         f"thermal pauses {summary['total_thermal_pause_seconds']:.0f}s, "
         f"max thermal state {summary['max_thermal_state']}\n"
-        f"FILES: {out}, {SHARD_DIR}/"
+        f"FILES: {out}, {shard_dir}/"
     )
     return 0 if drop_ok else 1
 
