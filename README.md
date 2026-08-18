@@ -150,48 +150,46 @@ At n=60 only gaps of ~20 pp are detectable, and the differences in play are 5–
 **This is an underpowered design, not evidence of no effect** — and equally, no support for
 the claim.
 
-### The oracle condition — the decisive experiment
+### Headline result — fixed vs learned vs oracle, on one episode set
 
-The gated rows above use a learned estimator with pooled Spearman 0.479. That leaves two very
-different explanations for the negative result, and they demand different responses:
-reversibility might be the wrong control variable, or our estimate of it might be too weak.
+All six conditions on the **same 79 episodes** (seeds 2000–2079, h_min=20). `gated_oof`
+scores each episode with a head from the CV fold that never trained on it, so the learned
+row is not reading its own training data — which is what makes it comparable to the oracle.
 
-The **oracle** condition separates them: the same controller, fed *measured* R from branch
-rollouts instead of a prediction. It runs on the already-labelled episodes with their recorded
-perturbation specs, so it needs no new branch rollouts.
+| Condition | n | Success | Interventions/ep | Mean horizon | Lead time (n reacted) | False alarm |
+|---|---|---|---|---|---|---|
+| fixed h=100 | 79 | 51/79 = 65% | 3.5 | 100 | — (0/79) | 0% |
+| fixed h=20 | 79 | 48/79 = 61% | 18.6 | 20 | — (0/79) | 0% |
+| gated_oof (γ=1) | 79 | 50/79 = 63% | 6.7 | 56 | +90 (37/79) | 18% |
+| gated_oof (γ=2) | 79 | 52/79 = 66% | 7.5 | 49 | +64 (35/79) | 25% |
+| oracle_R (γ=1) | 79 | 54/79 = 68% | 7.0 | 51 | +48 (19/79) | 6% |
+| **oracle_R (γ=2)** | 79 | **61/79 = 77%** | 7.5 | 47 | +49 (20/79) | 15% |
 
-**n=49, seeds 2000–2048, h_min=20** (all conditions on the same episodes):
-
-| Condition | n | Success | Interventions/ep | Mean horizon | False alarm |
-|---|---|---|---|---|---|
-| fixed h=100 | 49 | 32/49 = 65% | 3.5 | 100 | 0% |
-| fixed h=20 | 49 | 30/49 = 61% | 18.5 | 20 | 0% |
-| oracle_R (γ=1) | 49 | 36/49 = 73% | 6.9 | 51 | 6% |
-| **oracle_R (γ=2)** | 49 | **39/49 = 80%** | 7.3 | 48 | 15% |
-
-McNemar on paired seeds:
+McNemar on paired seeds (15 comparisons; Bonferroni threshold p<0.0033):
 
 | Comparison | discordant | p |
 |---|---|---|
-| oracle γ=2 vs fixed h=100 | 1 vs 8 | **0.039** |
-| oracle γ=2 vs fixed h=20 | 4 vs 13 | **0.049** |
-| oracle γ=1 vs fixed h=20 | 5 vs 11 | 0.210 |
-| fixed h=100 vs fixed h=20 | 10 vs 8 | 0.815 |
+| oracle γ=2 vs fixed h=100 | 2 vs 12 | **0.013** |
+| oracle γ=2 vs fixed h=20 | 7 vs 20 | **0.019** |
+| oracle γ=2 vs gated_oof γ=2 | 6 vs 15 | 0.078 |
+| gated_oof γ=2 vs fixed h=100 | 8 vs 9 | 1.000 |
+| gated_oof γ=1 vs fixed h=100 | 11 vs 10 | 1.000 |
+| fixed h=100 vs fixed h=20 | 16 vs 13 | 0.711 |
 
-**Given ground-truth reversibility, horizon gating significantly beats both fixed baselines**
-— 80% against 65% and 61%, using 7 interventions per episode instead of 18.5.
+**Two findings that point in opposite directions, and both matter:**
 
-Read this carefully, in both directions:
+1. **Reversibility is the right control variable.** Given ground-truth R, gating the horizon
+   beats both fixed baselines — 77% against 65% and 61%. The lever works.
+2. **A Spearman-0.660 estimator realises none of that gain.** `gated_oof` against
+   `fixed h=100` is p=1.000: eight wins, nine losses. Improving the estimator from 0.479 to
+   0.660 moved control performance not at all.
 
-- It supports the *direction* of the claim. The lever responds to reversibility, so the
-  negative result above is best explained by estimator quality rather than by the idea being
-  wrong. The gap between 80% (oracle) and ~50% (learned, run 2) is the cost of a
-  0.479-Spearman estimate.
-- **It is not established.** Both p-values are nominal; across the 6 pairwise tests a
-  Bonferroni threshold is 0.0083 and neither survives it. n=49 against a ~15 pp effect sits
-  right at the edge of the ~133 episodes the power analysis calls for.
-- **An oracle is a ceiling, not a result.** It reads labels measured on the very episodes it
-  runs. It bounds what is achievable; it is not itself achievable.
+The **11-point gap between oracle (77%) and learned (66%) is the measured cost of estimation
+error** (p=0.078). Closing it — not proving the lever — is the open problem.
+
+Limits, stated: no comparison survives Bonferroni correction across the 15 tests. And this
+is not an independent replication of the earlier n=49 oracle run (73%/80%) — seeds 2000–2048
+overlap, so it extends that result rather than confirming it.
 
 **Also measured:** `fixed h=5` scores **0/30** (run 1). Shortening the horizon is not a free
 safety lever: ACT emits absolute joint targets, so replanning every 5 steps without temporal
