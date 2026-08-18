@@ -68,7 +68,7 @@ ONSET_RANGE = (150, 280)
 # or it is not, so "how severe" is entirely "for how many steps".
 SWEEPS: dict[str, list[tuple[float, int | None]]] = {
     "object_displace": [(m, None) for m in (0.02, 0.035, 0.05, 0.08)],  # metres
-    "grasp_slip": [(1.0, d) for d in (2, 3, 6, 12)],                    # steps held open
+    "grasp_slip": [(1.0, d) for d in (6, 12, 24, 48)],                  # steps held open
     "actuation_noise": [(m, None) for m in (0.02, 0.05, 0.10, 0.20)],   # action std dev
     "occlusion": [(m, None) for m in (0.10, 0.25, 0.50, 0.90)],         # image area fraction
 }

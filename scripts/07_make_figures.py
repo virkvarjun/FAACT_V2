@@ -75,9 +75,17 @@ def figure_horizon_trace(out_dir: Path, ablation: dict | None) -> str:
     if ablation is None:
         return "skipped: no ablation.json (run script 06)"
     episodes = ablation.get("episodes", {})
-    gated = next((name for name in episodes if "reversibility" in name), None)
-    if gated is None:
-        return "skipped: ablation has no reversibility-gated condition"
+    # Find the adaptive condition by BEHAVIOUR rather than by name: whichever condition
+    # actually varied its horizon the most. Matching on a name string silently skipped this
+    # figure once already, when the condition was renamed from "reversibility_gated" to
+    # "gated_oof".
+    def spread(name: str) -> int:
+        return max((int(np.ptp(e["horizons"])) for e in episodes[name] if e["horizons"]),
+                   default=0)
+
+    gated = max(episodes, key=spread) if episodes else None
+    if gated is None or spread(gated) == 0:
+        return "skipped: no condition in this ablation varied its horizon"
 
     # Show the episode where the controller varied its horizon the most — a flat trace
     # would illustrate nothing, and picking it silently would overstate the controller.
