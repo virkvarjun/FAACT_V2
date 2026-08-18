@@ -197,6 +197,40 @@ ensembling makes each new chunk jump to a different target and the motion falls 
 
 ---
 
+### Generalisation to unseen episodes
+
+Every `gated_oof` episode in the table above comes from the *labelled* set — held out from
+its own CV fold, but still inside the labelled distribution. Running the comparison videos
+on never-labelled seeds suggested the learned controller might collapse there (1/7 against
+5/7 over seven episodes), so it was tested properly.
+
+**n=28 novel seeds (7000–7029), effective perturbation kinds only, corrected onset window:**
+
+| Condition | n | Success | Interventions/ep | Mean horizon |
+|---|---|---|---|---|
+| fixed h=100 | 28 | 11/28 = 39% | 3.7 | 100 |
+| fixed h=20 | 28 | 9/28 = 32% | 19.1 | 20 |
+| reversibility_gated (γ=2) | 28 | 8/28 = 29% | 9.7 | 41 |
+
+`fixed h=100` vs gated: 5 vs 2 discordant, **p=0.453**. The seven-episode alarm was noise.
+No collapse on unseen episodes, and no benefit either — the same conclusion as the main
+table, reached on independent seeds.
+
+Note the absolute rates: with only the two *effective* perturbation kinds at the corrected
+onset, the published fixed horizon falls from 65% to **39%**. The disturbances are finally
+doing real work, and there is far more headroom for a controller to demonstrate value than
+the v1 dataset offered.
+
+### Comparison videos
+
+`scripts/08_make_videos.py` renders matched pairs — same seed, same disturbance, different
+horizon rule — selected by outcome divergence, since a pair where both policies succeed
+demonstrates nothing. Output is 1280×480 h264 with the disturbance and outcome burned in.
+It writes nothing when no pair diverges, rather than producing a persuasive-looking file
+that shows no difference.
+
+---
+
 ## What exists right now
 
 ```
