@@ -150,52 +150,57 @@ At n=60 only gaps of ~20 pp are detectable, and the differences in play are 5–
 **This is an underpowered design, not evidence of no effect** — and equally, no support for
 the claim.
 
-### Headline result — fixed vs learned vs oracle, on one episode set
+### Headline result — the method has an operating regime, and we measured its edge
 
-All six conditions on the **same 79 episodes** (seeds 2000–2079, h_min=20). `gated_oof`
-scores each episode with a head from the CV fold that never trained on it, so the learned
-row is not reading its own training data — which is what makes it comparable to the oracle.
+Two ablations, on two disturbance regimes, reach opposite conclusions. Both are reported,
+because the contrast between them *is* the finding.
 
-| Condition | n | Success | Interventions/ep | Mean horizon | Lead time (n reacted) | False alarm |
-|---|---|---|---|---|---|---|
-| fixed h=100 | 79 | 51/79 = 65% | 3.5 | 100 | — (0/79) | 0% |
-| fixed h=20 | 79 | 48/79 = 61% | 18.6 | 20 | — (0/79) | 0% |
-| gated_oof (γ=1) | 79 | 50/79 = 63% | 6.7 | 56 | +90 (37/79) | 18% |
-| gated_oof (γ=2) | 79 | 52/79 = 66% | 7.5 | 49 | +64 (35/79) | 25% |
-| oracle_R (γ=1) | 79 | 54/79 = 68% | 7.0 | 51 | +48 (19/79) | 6% |
-| **oracle_R (γ=2)** | 79 | **61/79 = 77%** | 7.5 | 47 | +49 (20/79) | 15% |
+**Regime A — 39% of post-onset states already unrecoverable** (window 40–160, 4 kinds, n=79):
 
-McNemar on paired seeds (15 comparisons; Bonferroni threshold p<0.0033):
-
-| Comparison | discordant | p |
+| Condition | Success | Mean horizon |
 |---|---|---|
-| oracle γ=2 vs fixed h=100 | 2 vs 12 | **0.013** |
-| oracle γ=2 vs fixed h=20 | 7 vs 20 | **0.019** |
-| oracle γ=2 vs gated_oof γ=2 | 6 vs 15 | 0.078 |
-| gated_oof γ=2 vs fixed h=100 | 8 vs 9 | 1.000 |
-| gated_oof γ=1 vs fixed h=100 | 11 vs 10 | 1.000 |
-| fixed h=100 vs fixed h=20 | 16 vs 13 | 0.711 |
+| fixed h=100 | 51/79 = 65% | 100 |
+| fixed h=20 | 48/79 = 61% | 20 |
+| gated_oof (γ=2) | 52/79 = 66% | 49 |
+| **oracle_R (γ=2)** | **61/79 = 77%** | 47 |
 
-**Two findings that point in opposite directions, and both matter:**
+Oracle beats both baselines (p=0.013 vs h=100, p=0.019 vs h=20). Success is *unrelated* to
+mean horizon here: **ρ = −0.03**.
 
-1. **Reversibility is the right control variable.** Given ground-truth R, gating the horizon
-   beats both fixed baselines — 77% against 65% and 61%. The lever works.
-2. **A Spearman-0.660 estimator realises none of that gain.** `gated_oof` against
-   `fixed h=100` is p=1.000: eight wins, nine losses. Improving the estimator from 0.479 to
-   0.660 moved control performance not at all.
+**Regime B — 75% of post-onset states already unrecoverable** (window 150–280, 2 effective
+kinds, calibrated magnitudes, n=76):
 
-The **11-point gap between oracle (77%) and learned (66%) is the measured cost of estimation
-error** (p=0.078). Closing it — not proving the lever — is the open problem.
+| Condition | Success | Mean horizon |
+|---|---|---|
+| **fixed h=100** | **36/76 = 47%** | 100 |
+| gated_oof (γ=1) | 35/76 = 46% | 50 |
+| oracle_R (γ=1) | 30/76 = 39% | 43 |
+| oracle_R (γ=2) | 30/76 = 39% | 41 |
+| gated_oof (γ=2) | 30/76 = 39% | 41 |
+| fixed h=20 | 25/76 = 33% | 20 |
 
-Limits, stated: no comparison survives Bonferroni correction across the 15 tests. And this
-is not an independent replication of the earlier n=49 oracle run (73%/80%) — seeds 2000–2048
-overlap, so it extends that result rather than confirming it.
+The oracle now *loses* to the published fixed horizon, and nothing is significant (all
+p ≥ 0.061). Success has become an almost perfect function of how long the controller
+commits: **ρ = +0.94**, with `fixed h=5` at 0/30 completing the curve.
 
-**Also measured:** `fixed h=5` scores **0/30** (run 1). Shortening the horizon is not a free
-safety lever: ACT emits absolute joint targets, so replanning every 5 steps without temporal
-ensembling makes each new chunk jump to a different target and the motion falls apart.
+**The interpretation.** Shortening the commitment horizon is a costly intervention for a
+chunked policy — ACT emits absolute joint targets, so frequent replanning degrades the
+motion. That cost is only worth paying when there is a population of states that are *at
+risk but still recoverable*. In regime A such states are common and gating pays. In regime B
+three quarters of disturbed states are already lost, the intervention has nothing to act on,
+and only its cost remains.
 
----
+So the honest claim is neither "reversibility works" nor "it doesn't":
+
+> Reversibility-gated horizon control pays off only where recoverable-but-at-risk states are
+> common. Its binding constraint is the density of those states, not the quality of the
+> reversibility estimate.
+
+**A methodological warning that follows.** Both regimes sit inside the 25–65% perturbed-success
+band that the plan specifies for calibration. They differ enormously in the quantity that
+actually matters. **Calibrating disturbances by episode success rate does not guarantee a
+useful reversibility distribution** — the band should be set on the fraction of recoverable
+states, not on the success rate.
 
 ### Corrected disturbances: same accuracy from half the data
 
