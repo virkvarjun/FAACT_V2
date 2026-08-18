@@ -92,10 +92,12 @@ def run_cv(full, groups: list[str], args) -> int:
     misleading in the first place.
     """
     results = {}
+    fold_bundles: dict[str, list[dict]] = {}
     for group in groups:
         data = full.select(group)
         oof_pred = np.full(len(data), np.nan)
         fold_scores = []
+        fold_bundles[group] = []
 
         for train, val, test in episode_kfold(data, k=args.folds, seed=args.split_seed):
             std = Standardiser.fit(train.X)
@@ -105,6 +107,16 @@ def run_cv(full, groups: list[str], args) -> int:
                 epochs=args.epochs, patience=args.patience, lr=args.lr,
                 weight_decay=args.weight_decay, seed=args.split_seed,
             )
+            # Keep every fold's head with the episodes it never saw. The ablation can then
+            # score each episode with a head that was not trained on it, which is the only
+            # way to compare the learned controller against the oracle on the same seeds
+            # without the learned side having memorised them.
+            fold_bundles[group].append({
+                "state_dict": {k: v.clone() for k, v in head.state_dict().items()},
+                "mean": std.mean,
+                "std": std.std,
+                "held_out_episodes": sorted(int(e) for e in np.unique(test.episode_id)),
+            })
             pred = head.predict(std.transform(test.X))
             # Place predictions back at their original row positions so the pooled vector
             # lines up with data.y exactly.
@@ -165,6 +177,17 @@ def run_cv(full, groups: list[str], args) -> int:
             "std": std.std,
         },
         ARTIFACTS / "reversibility_head.pt",
+    )
+
+    # Per-fold heads for an uncontaminated learned-vs-oracle comparison.
+    torch.save(
+        {
+            "input_dim": int(data.X.shape[1]),
+            "feature_set": best["feature_set"],
+            "feature_keys": data.feature_keys,
+            "folds": fold_bundles[best["feature_set"]],
+        },
+        ARTIFACTS / "reversibility_heads_oof.pt",
     )
 
     out = write_json(

@@ -80,8 +80,36 @@ def load_oracle_labels(shard_dir: Path) -> dict[int, dict]:
     return labels
 
 
+def load_oof_scorers(path: Path) -> dict[int, object]:
+    """Map each episode seed to a scorer whose head never trained on that episode.
+
+    The single head saved by script 05 is refit on all data, so scoring a labelled episode
+    with it would be scoring the training set — which would flatter the learned controller
+    exactly where it is being compared against the oracle.
+    """
+    import torch
+
+    from faact.labeling.dataset import Standardiser
+    from faact.models.reversibility import ReversibilityHead, ScorerAdapter
+
+    blob = torch.load(path, map_location="cpu", weights_only=False)
+    per_seed: dict[int, object] = {}
+    for fold in blob["folds"]:
+        head = ReversibilityHead(input_dim=blob["input_dim"])
+        head.load_state_dict(fold["state_dict"])
+        head.eval()
+        scorer = ScorerAdapter(
+            head, Standardiser(mean=np.asarray(fold["mean"]), std=np.asarray(fold["std"])),
+            blob["feature_keys"],
+        )
+        for seed in fold["held_out_episodes"]:
+            per_seed[int(seed)] = scorer
+    return per_seed
+
+
 def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int],
-                     oracle_labels: dict[int, dict] | None = None):
+                     oracle_labels: dict[int, dict] | None = None,
+                     oof_scorers: dict[int, object] | None = None):
     """Ablation rows. Gated rows are omitted when no head is available.
 
     `h_min` is the floor the gated controller may shorten to, and it matters more than it
@@ -101,6 +129,18 @@ def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int
                     f"reversibility_gated (gamma={gamma}, h_min={h_min})",
                     (lambda g: lambda _seed: reversibility_gated(scorer, h_min=h_min, gamma=g))(gamma),
                     "the claim",
+                )
+            )
+    if oof_scorers:
+        # Learned controller, scored per episode by a head that never saw it. Directly
+        # comparable to the oracle rows on the same seeds.
+        for gamma in gammas:
+            conditions.append(
+                Condition(
+                    f"gated_oof (gamma={gamma}, h_min={h_min})",
+                    (lambda g: lambda seed: reversibility_gated(
+                        oof_scorers[seed], h_min=h_min, gamma=g))(gamma),
+                    "the claim, evaluated out-of-fold",
                 )
             )
     if oracle_labels:
@@ -132,6 +172,8 @@ def main() -> int:
     ap.add_argument("--max-steps", type=int, default=MAX_EPISODE_STEPS)
     ap.add_argument("--oracle-shards", default=None,
                     help="label dir; adds the oracle condition and replays those episodes")
+    ap.add_argument("--oof-heads", default=None,
+                    help="per-fold heads from script 05; adds an uncontaminated gated row")
     ap.add_argument("--out", default="ablation.json")
     args = ap.parse_args()
 
@@ -157,7 +199,9 @@ def main() -> int:
             episodes.append((seed, sample_spec(kind, rng, onset_range=ONSET_RANGE)))
 
     scorer = None if args.skip_gated else load_scorer(Path(args.head))
-    conditions = build_conditions(scorer, args.gammas, args.h_min, args.fixed_hs, oracle_labels)
+    oof_scorers = load_oof_scorers(Path(args.oof_heads)) if args.oof_heads else {}
+    conditions = build_conditions(scorer, args.gammas, args.h_min, args.fixed_hs,
+                                  oracle_labels, oof_scorers)
 
     policy = ACTWrapper(CHECKPOINT, device="cpu")
     env = make_env()
