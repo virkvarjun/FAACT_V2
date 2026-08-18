@@ -26,7 +26,7 @@ measured; empty cells mean not yet run.
 | M2 | Perturbation suite | perturbed success in 25–65% band | ⚠️ **in band (50%), but by post-hoc check, not a sweep** |
 | M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.83 → 0.57**, 493 states |
 | M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ❌ **0.479** (5-fold pooled) |
-| M5 | Horizon control + ablation | table with n stated | ✅ table produced — ❌ **no condition beats fixed h=20; all p ≥ 0.21** |
+| M5 | Horizon control + ablation | table with n stated | ✅ learned gating ❌ **not significant**; **oracle R beats both baselines (80% vs 65/61%, p≈0.04)** |
 | M6 | Figures | — | 🟡 fig 1 done, rest pending run 2 |
 
 ### M1 baseline, verified against LeRobot's official evaluation
@@ -150,6 +150,49 @@ power=0.80, discordant rate 0.40 measured from our data), episodes needed *per c
 At n=60 only gaps of ~20 pp are detectable, and the differences in play are 5–11 pp.
 **This is an underpowered design, not evidence of no effect** — and equally, no support for
 the claim.
+
+### The oracle condition — the decisive experiment
+
+The gated rows above use a learned estimator with pooled Spearman 0.479. That leaves two very
+different explanations for the negative result, and they demand different responses:
+reversibility might be the wrong control variable, or our estimate of it might be too weak.
+
+The **oracle** condition separates them: the same controller, fed *measured* R from branch
+rollouts instead of a prediction. It runs on the already-labelled episodes with their recorded
+perturbation specs, so it needs no new branch rollouts.
+
+**n=49, seeds 2000–2048, h_min=20** (all conditions on the same episodes):
+
+| Condition | n | Success | Interventions/ep | Mean horizon | False alarm |
+|---|---|---|---|---|---|
+| fixed h=100 | 49 | 32/49 = 65% | 3.5 | 100 | 0% |
+| fixed h=20 | 49 | 30/49 = 61% | 18.5 | 20 | 0% |
+| oracle_R (γ=1) | 49 | 36/49 = 73% | 6.9 | 51 | 6% |
+| **oracle_R (γ=2)** | 49 | **39/49 = 80%** | 7.3 | 48 | 15% |
+
+McNemar on paired seeds:
+
+| Comparison | discordant | p |
+|---|---|---|
+| oracle γ=2 vs fixed h=100 | 1 vs 8 | **0.039** |
+| oracle γ=2 vs fixed h=20 | 4 vs 13 | **0.049** |
+| oracle γ=1 vs fixed h=20 | 5 vs 11 | 0.210 |
+| fixed h=100 vs fixed h=20 | 10 vs 8 | 0.815 |
+
+**Given ground-truth reversibility, horizon gating significantly beats both fixed baselines**
+— 80% against 65% and 61%, using 7 interventions per episode instead of 18.5.
+
+Read this carefully, in both directions:
+
+- It supports the *direction* of the claim. The lever responds to reversibility, so the
+  negative result above is best explained by estimator quality rather than by the idea being
+  wrong. The gap between 80% (oracle) and ~50% (learned, run 2) is the cost of a
+  0.479-Spearman estimate.
+- **It is not established.** Both p-values are nominal; across the 6 pairwise tests a
+  Bonferroni threshold is 0.0083 and neither survives it. n=49 against a ~15 pp effect sits
+  right at the edge of the ~133 episodes the power analysis calls for.
+- **An oracle is a ceiling, not a result.** It reads labels measured on the very episodes it
+  runs. It bounds what is achievable; it is not itself achievable.
 
 **Also measured:** `fixed h=5` scores **0/30** (run 1). Shortening the horizon is not a free
 safety lever: ACT emits absolute joint targets, so replanning every 5 steps without temporal

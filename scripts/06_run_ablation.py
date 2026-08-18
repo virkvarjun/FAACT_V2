@@ -25,10 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from faact.backbone.act_wrapper import ACTWrapper  # noqa: E402
 from faact.envs.make import MAX_EPISODE_STEPS, make_env  # noqa: E402
-from faact.envs.perturb import KINDS, sample_spec  # noqa: E402
+from faact.envs.perturb import KINDS, PerturbationSpec, sample_spec  # noqa: E402
 from faact.eval.ablation import Condition, align_conditions, build_table, run_condition  # noqa: E402
 from faact.eval.metrics import markdown_table  # noqa: E402
-from faact.runtime.controller import H_MAX, H_MIN, fixed, reversibility_gated  # noqa: E402
+from faact.runtime.controller import H_MAX, H_MIN, fixed, oracle, reversibility_gated  # noqa: E402
 from faact.thermal import ThermalGovernor, limit_torch_threads  # noqa: E402
 from faact.utils import ARTIFACTS, timed, write_json  # noqa: E402
 
@@ -56,7 +56,32 @@ def load_scorer(head_path: Path):
     return ScorerAdapter(head, std, blob["feature_keys"])
 
 
-def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int]):
+def load_oracle_labels(shard_dir: Path) -> dict[int, dict]:
+    """Load measured R per timestep for each labelled episode, keyed by seed.
+
+    These are branch-rollout ground truth, so the oracle condition needs no estimator at
+    all — which is the point. If the oracle also fails to beat a fixed horizon, then the
+    limitation is the *lever*, not our ability to predict R.
+    """
+    labels: dict[int, dict] = {}
+    for path in sorted(shard_dir.glob("episode_*.json")):
+        try:
+            rec = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue  # a shard being written by a concurrent labelling job
+        if not rec.get("points"):
+            continue
+        labels[int(rec["seed"])] = {
+            "perturb": rec["perturb"],
+            "R": {int(p["timestep"]): float(p["reversibility"]) for p in rec["points"]},
+        }
+    if not labels:
+        raise FileNotFoundError(f"no labelled episodes in {shard_dir}")
+    return labels
+
+
+def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int],
+                     oracle_labels: dict[int, dict] | None = None):
     """Ablation rows. Gated rows are omitted when no head is available.
 
     `h_min` is the floor the gated controller may shorten to, and it matters more than it
@@ -78,6 +103,18 @@ def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int
                     "the claim",
                 )
             )
+    if oracle_labels:
+        # Ceiling condition: the same controller fed measured R instead of a prediction.
+        # Its gap to the gated rows is exactly the cost of estimation error.
+        for gamma in gammas:
+            conditions.append(
+                Condition(
+                    f"oracle_R (gamma={gamma}, h_min={h_min})",
+                    (lambda g: lambda seed: oracle(
+                        oracle_labels[seed]["R"], h_min=h_min, gamma=g))(gamma),
+                    "ceiling: perfect reversibility knowledge",
+                )
+            )
     return conditions
 
 
@@ -93,6 +130,8 @@ def main() -> int:
     ap.add_argument("--head", default=str(ARTIFACTS / "reversibility_head.pt"))
     ap.add_argument("--skip-gated", action="store_true")
     ap.add_argument("--max-steps", type=int, default=MAX_EPISODE_STEPS)
+    ap.add_argument("--oracle-shards", default=None,
+                    help="label dir; adds the oracle condition and replays those episodes")
     ap.add_argument("--out", default="ablation.json")
     args = ap.parse_args()
 
@@ -100,15 +139,25 @@ def main() -> int:
     governor = ThermalGovernor()
 
     # One fixed episode set, built once and reused by every condition.
-    episodes = []
-    for i in range(args.episodes):
-        seed = args.seed + i
-        rng = np.random.default_rng(seed)
-        kind = args.kinds[i % len(args.kinds)]
-        episodes.append((seed, sample_spec(kind, rng, onset_range=ONSET_RANGE)))
+    oracle_labels = load_oracle_labels(Path(args.oracle_shards)) if args.oracle_shards else {}
+    if oracle_labels:
+        # Replay the *labelled* episodes with their recorded specs. The oracle needs
+        # ground-truth R for the very episodes being run, and re-sampling a spec here
+        # would silently pair each episode with a different disturbance than it was
+        # measured under.
+        episodes = [(seed, PerturbationSpec.from_dict(rec["perturb"]))
+                    for seed, rec in sorted(oracle_labels.items())][: args.episodes]
+        print(f"replaying {len(episodes)} labelled episodes for the oracle condition")
+    else:
+        episodes = []
+        for i in range(args.episodes):
+            seed = args.seed + i
+            rng = np.random.default_rng(seed)
+            kind = args.kinds[i % len(args.kinds)]
+            episodes.append((seed, sample_spec(kind, rng, onset_range=ONSET_RANGE)))
 
     scorer = None if args.skip_gated else load_scorer(Path(args.head))
-    conditions = build_conditions(scorer, args.gammas, args.h_min, args.fixed_hs)
+    conditions = build_conditions(scorer, args.gammas, args.h_min, args.fixed_hs, oracle_labels)
 
     policy = ACTWrapper(CHECKPOINT, device="cpu")
     env = make_env()
@@ -142,7 +191,7 @@ def main() -> int:
         "gammas": args.gammas,
         "h_min": args.h_min,
         "onset_range": ONSET_RANGE,
-        "seeds": [args.seed, args.seed + args.episodes - 1],
+        "seeds": [episodes[0][0], episodes[-1][0]] if episodes else [],
         "gated_included": scorer is not None,
         "seconds": round(t["seconds"], 1),
         "thermal": governor.report(),
@@ -161,8 +210,8 @@ def main() -> int:
     print(
         f"MILESTONE: M5\n"
         f"GATE: {'PASS' if rows else 'FAIL'} (table produced with n stated)\n"
-        f"MEASURED: n={n_common} common episodes, seeds {args.seed}-"
-        f"{args.seed + args.episodes - 1}, gammas={args.gammas}, h_min={args.h_min}\n"
+        f"MEASURED: n={n_common} common episodes, seeds {episodes[0][0]}-{episodes[-1][0]}, "
+        f"gammas={args.gammas}, h_min={args.h_min}\n"
         f"          gated conditions {'included' if scorer else 'SKIPPED (no head)'}\n"
         f"WALL CLOCK: {t['seconds'] / 60:.1f} min\n"
         f"FILES: {out}, {ARTIFACTS / 'ablation_table.md'}"
