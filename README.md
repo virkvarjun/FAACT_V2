@@ -26,7 +26,7 @@ measured; empty cells mean not yet run.
 | M2 | Perturbation suite | perturbed success in 25–65% band | ⚠️ **in band (50%), but by post-hoc check, not a sweep** |
 | M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.83 → 0.57**, 493 states |
 | M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ❌ **0.479** (5-fold pooled) |
-| M5 | Horizon control + ablation | table with n stated | ✅ table produced; **gain not significant** |
+| M5 | Horizon control + ablation | table with n stated | ✅ table produced — ❌ **no condition beats fixed h=20; all p ≥ 0.21** |
 | M6 | Figures | — | 🟡 fig 1 done, rest pending run 2 |
 
 ### M1 baseline, verified against LeRobot's official evaluation
@@ -116,30 +116,44 @@ A single 24/8/8 split was tried first and abandoned as untrustworthy: it selecte
 `transformer` on validation at 0.509, which then scored 0.265 on test — a 0.24 swing on the
 same model, driven by an 8-episode test set.
 
-### M5 — ablation, run 1 (n=30, seeds 3000–3029, h_min=5, γ=1.0)
+### M5 — ablation. **Negative result, and the design is underpowered.**
+
+Two runs. Run 1 (n=30) suggested the claim; run 2 (n=60) did not replicate it. Both are reported.
+
+**Run 2 — n=60, seeds 3000–3059, h_min=20** (the run to believe):
 
 | Condition | n | Success | Interventions/ep | Mean horizon | Lead time (n reacted) | False alarm |
 |---|---|---|---|---|---|---|
-| fixed h=100 | 30 | 15/30 = 50% | 3.7 | 100 | — (0/30) | 0% |
-| fixed h=20 | 30 | 16/30 = 53% | 18.9 | 20 | — (0/30) | 0% |
-| fixed h=5 | 30 | **0/30 = 0%** | 80.0 | 5 | — (0/30) | — |
-| reversibility_gated (γ=1) | 30 | **17/30 = 57%** | 6.5 | 57 | +135 (11/30) | 18% |
+| fixed h=100 | 60 | 28/60 = 47% | 3.6 | 100 | — (0/60) | 0% |
+| fixed h=20 | 60 | **35/60 = 58%** | 18.8 | 20 | — (0/60) | 0% |
+| reversibility_gated (γ=1) | 60 | 29/60 = 48% | 6.3 | 61 | +123 (25/60) | 14% |
+| reversibility_gated (γ=2) | 60 | 32/60 = 53% | 9.3 | 41 | +76 (39/60) | 38% |
 
-**The claim is nominally supported but not statistically significant.** McNemar on paired
-seeds: vs h=100 **p=0.688** (4 vs 2 discordant), vs h=20 **p=1.000** (6 vs 5). Only vs h=5
-is it significant (17 vs 0, p<0.001), and that baseline is degenerate. Two episodes is noise.
+**McNemar on paired seeds: every pair p ≥ 0.210.** Nothing is distinguishable from anything,
+including h=20 vs h=100. The reversibility-gated controller does **not** beat a fixed short
+horizon.
 
-What does hold up:
+**Run 1 — n=30, h_min=5** (superseded): gated led at 17/30 = 57% against 50% and 53%, with
+p=0.688 and p=1.000. That ordering was noise. Doubling n reversed it, which is why run 1 is
+not presented as the result.
 
-- **The ablation that matters most is clean.** Replanning 5× more often (h=20) buys one
-  episode over h=100, so gating is not smuggling in a "replan more often" effect.
-- **Efficiency is a real difference.** Gated matches or beats h=20 using 6.5 interventions
-  per episode against 18.9, at a mean horizon of 57 rather than a fixed 20.
-- **fixed h=5 → 0/30 is a finding.** Shortening the horizon is *not* a free safety lever for
-  chunked policies: ACT emits absolute joint targets, so replanning every 5 steps without
-  temporal ensembling makes each chunk jump to a different target and the motion falls
-  apart. Run 1's gated condition was therefore handicapped — its floor sat in exactly that
-  collapse regime. Run 2 uses `h_min=20`.
+**Why no conclusion can be drawn either way.** Power analysis (paired McNemar, α=0.05,
+power=0.80, discordant rate 0.40 measured from our data), episodes needed *per condition*:
+
+| true gap | episodes needed |
+|---|---|
+| 5 pp | ~1250 |
+| 10 pp | ~308 |
+| 15 pp | ~133 |
+| 20 pp | ~72 |
+
+At n=60 only gaps of ~20 pp are detectable, and the differences in play are 5–11 pp.
+**This is an underpowered design, not evidence of no effect** — and equally, no support for
+the claim.
+
+**Also measured:** `fixed h=5` scores **0/30** (run 1). Shortening the horizon is not a free
+safety lever: ACT emits absolute joint targets, so replanning every 5 steps without temporal
+ensembling makes each new chunk jump to a different target and the motion falls apart.
 
 ---
 
