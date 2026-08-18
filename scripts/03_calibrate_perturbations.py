@@ -40,10 +40,26 @@ CHECKPOINT = "lerobot/act_aloha_sim_transfer_cube_human"
 BAND = (0.25, 0.65)
 BAND_MID = sum(BAND) / 2
 
-# Onset window: after the arms have engaged the cube but before a successful transfer
-# completes (unperturbed successes finish around step 230-320). Perturbing here disturbs
-# an episode that was otherwise on track, which is the case reversibility is about.
-ONSET_RANGE = (40, 160)
+# A perturbation must also *reduce* success by at least this much, in absolute percentage
+# points, against the unperturbed reference on the same seeds.
+#
+# The band alone is not a sufficient test and this was caught the hard way: with an
+# unperturbed reference of 65%, `grasp_slip` scored 60-65% at every duration — no effect
+# whatsoever — and passed the 25-65% band check four times in a row. An absolute band
+# cannot distinguish "calibrated" from "does nothing" when the baseline sits at its edge.
+MIN_SUCCESS_DROP = 0.15
+
+# Onset window, chosen from the task's own phase timings rather than guessed.
+#
+# Measured on 5 successful episodes: the right gripper first contacts the cube at median
+# step 154, and the transfer completes at median step 278. The original window (40, 160)
+# therefore fired almost entirely BEFORE the cube was grasped — which is why `grasp_slip`
+# measured as a complete no-op (65% at every duration, identical to the unperturbed rate):
+# forcing a gripper open when it holds nothing does nothing.
+#
+# (150, 280) puts the disturbance inside grasp-and-transport, which is where recoverability
+# is actually in question.
+ONSET_RANGE = (150, 280)
 
 # Sweeps per kind, as (magnitude, duration) pairs. Units differ by kind — see
 # faact/envs/perturb.py DEFAULTS. `duration=None` keeps that kind's default.
@@ -59,7 +75,8 @@ SWEEPS: dict[str, list[tuple[float, int | None]]] = {
 
 
 def evaluate(
-    env, executor, kind: str, magnitude: float, duration: int | None, seeds: list[int]
+    env, executor, kind: str, magnitude: float, duration: int | None, seeds: list[int],
+    base_rate: float | None = None,
 ) -> dict:
     """Run one (kind, magnitude) cell and return its measured success rate.
 
@@ -90,7 +107,12 @@ def evaluate(
         )
 
     rate = success_rate(results)
+    drop = None if base_rate is None else base_rate - rate
     return {
+        "drop_vs_unperturbed": drop,
+        "effective": bool(
+            BAND[0] <= rate <= BAND[1] and drop is not None and drop >= MIN_SUCCESS_DROP
+        ),
         "kind": kind,
         "magnitude": magnitude,
         "duration": duration,
@@ -132,28 +154,29 @@ def main() -> int:
         for kind in args.kinds:
             print(f"{kind}:")
             for magnitude, duration in SWEEPS[kind]:
-                cell = evaluate(env, executor, kind, magnitude, duration, seeds)
+                cell = evaluate(env, executor, kind, magnitude, duration, seeds, base_rate)
                 cells.append(cell)
                 skipped = cell["n_skipped_before_onset"]
                 print(
                     f"  mag={magnitude:<6} dur={str(duration):<5} "
                     f"success={cell['n_success']:>2}/{cell['n_episodes']} "
                     f"= {cell['success_rate']:.0%}  mean_reward={cell['mean_max_reward']:.1f}"
+                    f"  drop {cell['drop_vs_unperturbed']:+.0%}"
                     f"{f'  ({skipped} ended before onset)' if skipped else ''}"
-                    f"  {'IN BAND' if cell['in_band'] else ''}",
+                    f"  {'EFFECTIVE' if cell['effective'] else ''}",
                     flush=True,
                 )
 
             # Prefer an in-band magnitude closest to the band midpoint; if none landed in
             # band, still record the closest so the failure is explicit rather than empty.
             kind_cells = [c for c in cells if c["kind"] == kind]
-            in_band = [c for c in kind_cells if c["in_band"]]
-            pool = in_band or kind_cells
+            effective = [c for c in kind_cells if c["effective"]]
+            pool = effective or kind_cells
             best = min(pool, key=lambda c: abs(c["success_rate"] - BAND_MID))
-            chosen[kind] = {**best, "any_in_band": bool(in_band)}
+            chosen[kind] = {**best, "any_in_band": bool(effective)}
             print(f"  -> chose mag={best['magnitude']} dur={best['duration']} "
                   f"at {best['success_rate']:.0%}"
-                  f"{'' if in_band else '  (NO MAGNITUDE LANDED IN BAND)'}\n")
+                  f"{'' if in_band else '  (NO SETTING WAS EFFECTIVE)'}\n")
     env.close()
 
     all_in_band = all(v["any_in_band"] for v in chosen.values())
@@ -161,6 +184,7 @@ def main() -> int:
         "gate": "M2",
         "passed": all_in_band,
         "band": BAND,
+        "min_success_drop": MIN_SUCCESS_DROP,
         "onset_range": ONSET_RANGE,
         "unperturbed_reference": {
             "success_rate": base_rate,
@@ -176,12 +200,14 @@ def main() -> int:
     out = write_json(args.out, payload)
 
     print(f"MILESTONE: M2\nGATE: {'PASS' if all_in_band else 'FAIL'} "
-          f"(every kind must have a magnitude in {BAND[0]:.0%}-{BAND[1]:.0%})")
+          f"(every kind needs a setting inside {BAND[0]:.0%}-{BAND[1]:.0%} AND dropping "
+          f"success by >= {MIN_SUCCESS_DROP:.0%} vs unperturbed)")
     print(f"MEASURED: unperturbed {base_rate:.0%} on seeds {seeds[0]}-{seeds[-1]}, n={len(seeds)}")
     for kind, c in chosen.items():
         print(f"          {kind:<17} mag={c['magnitude']:<6} dur={str(c['duration']):<5} "
               f"{c['n_success']}/{c['n_episodes']} = {c['success_rate']:.0%}"
-              f"{'' if c['any_in_band'] else '   OUT OF BAND'}")
+              f"  drop {c['drop_vs_unperturbed']:+.0%}"
+              f"{'' if c['any_in_band'] else '   NOT EFFECTIVE'}")
     print(f"WALL CLOCK: {payload['seconds']:.0f}s\nFILES: {out}")
     return 0 if all_in_band else 1
 

@@ -52,7 +52,17 @@ from faact.thermal import (  # noqa: E402
 from faact.utils import ARTIFACTS, timed, write_json  # noqa: E402
 
 CHECKPOINT = "lerobot/act_aloha_sim_transfer_cube_human"
-ONSET_RANGE = (40, 160)
+# Onset window, chosen from the task's own phase timings rather than guessed.
+#
+# Measured on 5 successful episodes: the right gripper first contacts the cube at median
+# step 154, and the transfer completes at median step 278. The original window (40, 160)
+# therefore fired almost entirely BEFORE the cube was grasped — which is why `grasp_slip`
+# measured as a complete no-op (65% at every duration, identical to the unperturbed rate):
+# forcing a gripper open when it holds nothing does nothing.
+#
+# (150, 280) puts the disturbance inside grasp-and-transport, which is where recoverability
+# is actually in question.
+ONSET_RANGE = (150, 280)
 SHARD_DIR = ARTIFACTS / "reversibility_shards"
 
 log = logging.getLogger("faact.label")
