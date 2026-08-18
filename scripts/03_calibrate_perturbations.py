@@ -167,22 +167,22 @@ def main() -> int:
                     flush=True,
                 )
 
-            # Prefer an in-band magnitude closest to the band midpoint; if none landed in
-            # band, still record the closest so the failure is explicit rather than empty.
+            # Prefer an *effective* setting closest to the band midpoint; if none was
+            # effective, still record the closest so the failure is explicit, not empty.
             kind_cells = [c for c in cells if c["kind"] == kind]
             effective = [c for c in kind_cells if c["effective"]]
             pool = effective or kind_cells
             best = min(pool, key=lambda c: abs(c["success_rate"] - BAND_MID))
-            chosen[kind] = {**best, "any_in_band": bool(effective)}
+            chosen[kind] = {**best, "any_effective": bool(effective)}
             print(f"  -> chose mag={best['magnitude']} dur={best['duration']} "
                   f"at {best['success_rate']:.0%}"
-                  f"{'' if in_band else '  (NO SETTING WAS EFFECTIVE)'}\n")
+                  f"{'' if effective else '  (NO SETTING WAS EFFECTIVE)'}\n")
     env.close()
 
-    all_in_band = all(v["any_in_band"] for v in chosen.values())
+    all_effective = all(v["any_effective"] for v in chosen.values())
     payload = {
         "gate": "M2",
-        "passed": all_in_band,
+        "passed": all_effective,
         "band": BAND,
         "min_success_drop": MIN_SUCCESS_DROP,
         "onset_range": ONSET_RANGE,
@@ -199,7 +199,7 @@ def main() -> int:
     }
     out = write_json(args.out, payload)
 
-    print(f"MILESTONE: M2\nGATE: {'PASS' if all_in_band else 'FAIL'} "
+    print(f"MILESTONE: M2\nGATE: {'PASS' if all_effective else 'FAIL'} "
           f"(every kind needs a setting inside {BAND[0]:.0%}-{BAND[1]:.0%} AND dropping "
           f"success by >= {MIN_SUCCESS_DROP:.0%} vs unperturbed)")
     print(f"MEASURED: unperturbed {base_rate:.0%} on seeds {seeds[0]}-{seeds[-1]}, n={len(seeds)}")
@@ -207,9 +207,9 @@ def main() -> int:
         print(f"          {kind:<17} mag={c['magnitude']:<6} dur={str(c['duration']):<5} "
               f"{c['n_success']}/{c['n_episodes']} = {c['success_rate']:.0%}"
               f"  drop {c['drop_vs_unperturbed']:+.0%}"
-              f"{'' if c['any_in_band'] else '   NOT EFFECTIVE'}")
+              f"{'' if c['any_effective'] else '   NOT EFFECTIVE'}")
     print(f"WALL CLOCK: {payload['seconds']:.0f}s\nFILES: {out}")
-    return 0 if all_in_band else 1
+    return 0 if all_effective else 1
 
 
 if __name__ == "__main__":

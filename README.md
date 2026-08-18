@@ -24,8 +24,8 @@ measured; empty cells mean not yet run.
 | M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS (macOS dev box; not yet run on the L40S) |
 | M1 | ACT checkpoint + honest baseline | reproduce LeRobot's official per-seed results | ✅ **48/50 = 96% agreement**, rates match at 76.0% |
 | M2 | Perturbation suite | perturbed success in 25–65% band | ⚠️ **in band (50%), but by post-hoc check, not a sweep** |
-| M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.83 → 0.57**, 493 states |
-| M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ❌ **0.479** (5-fold pooled) |
+| M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.83 → 0.57**, 990 states / 80 eps |
+| M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ✅ **0.660** (5-fold pooled, 80 eps) |
 | M5 | Horizon control + ablation | table with n stated | ✅ learned gating ❌ **not significant**; **oracle R beats both baselines (80% vs 65/61%, p≈0.04)** |
 | M6 | Figures | — | 🟡 fig 1 done, rest pending run 2 |
 
@@ -86,35 +86,34 @@ Gate PASS. ~1h45 wall on 3 performance cores of an M5 MacBook, **zero thermal pa
 (never left macOS "fair"). The run was killed once at 33/40 by a task timeout and resumed
 from per-episode shards with no recomputation.
 
-### M4 — reversibility head, measured (gate FAILS)
+### M4 — reversibility head. **Gate PASSES at 80 episodes.**
 
-5-fold **episode-level** cross-validation, pooled out-of-fold predictions over all 493 states:
+5-fold **episode-level** cross-validation, pooled out-of-fold predictions over every labelled state:
 
-| feature set | dim | pooled Spearman | per-fold | MAE (baseline 0.415) |
+| feature set | dim | n=40 eps (493 states) | **n=80 eps (990 states)** | MAE @80 (baseline 0.414) |
 |---|---|---|---|---|
-| cheap | 182 | 0.331 | 0.355 ± 0.119 | 0.329 |
-| transformer | 1024 | 0.447 | 0.462 ± 0.161 | 0.282 |
-| **minimal** | **28** | **0.479** | 0.483 ± 0.138 | **0.281** |
-| all | 1206 | 0.390 | 0.423 ± 0.123 | 0.306 |
+| cheap | 182 | 0.331 | 0.601 | 0.224 |
+| **transformer** | 1024 | 0.447 | **0.660** | **0.199** |
+| minimal | 28 | 0.479 | 0.629 | 0.209 |
+| all | 1206 | 0.390 | 0.642 | 0.195 |
 
-**Gate FAILS: 0.479 against a 0.50 threshold.** Marginal — 0.50 is inside one per-fold
-standard deviation — and MAE beats predict-the-mean by 32%, so there is real signal.
+**Pooled Spearman 0.660** (per-fold 0.670 ± 0.076), against a 0.50 gate. MAE 0.199 vs
+predict-the-mean 0.414 — a 52% reduction.
 
-Two findings worth more than the gate:
+The path there is the useful part:
 
-- **Label noise is not the bottleneck.** Test–retest reliability of the labels is **0.977**
-  (treating measured R as the true probability and drawing two independent Binomial(M=8)
-  re-measurements), because 83% of R values saturate at 0 or 1. So 0.479 is 49% of the
-  achievable ceiling and raising M to 16 or 32 would buy nothing (ceiling 0.992 / 0.999).
-  The limit is features and training-set size, not measurement.
-- **28 dimensions beat 1024.** Arm state plus the first action predicts reversibility better
-  than ACT's internal transformer representation, which overfits at ~300 training states
-  per fold. Reversibility looks predictable from where the arm is and what it is about to
-  do — no policy internals required.
-
-A single 24/8/8 split was tried first and abandoned as untrustworthy: it selected
-`transformer` on validation at 0.509, which then scored 0.265 on test — a 0.24 swing on the
-same model, driven by an 8-episode test set.
+- At 40 episodes the gate **failed at 0.479**, and the 1024-d transformer features were the
+  *worst* performer (0.447) while 28-d `minimal` was best. That inverted at 80 episodes.
+  It was a sample-size effect: ~300 training states per fold cannot support 1024 dimensions,
+  ~600 can.
+- **Label noise was correctly ruled out as the cause.** Test–retest reliability of the labels
+  is 0.977 (treat measured R as the true probability, draw two independent Binomial(M=8)
+  re-measurements), because 83% of R values saturate at 0 or 1. So more branches would have
+  bought nothing — the ceiling was already 0.977 — and the bottleneck was training-set size.
+  Doubling episodes moved 0.479 → 0.660; raising M would not have.
+- A single 24/8/8 split was tried first and abandoned as untrustworthy: it selected
+  `transformer` on validation at 0.509, which then scored 0.265 on test — a 0.24 swing on the
+  same model from an 8-episode test set.
 
 ### M5 — ablation. **Negative result, and the design is underpowered.**
 
