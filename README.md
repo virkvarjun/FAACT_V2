@@ -197,6 +197,31 @@ ensembling makes each new chunk jump to a different target and the motion falls 
 
 ---
 
+### Corrected disturbances: same accuracy from half the data
+
+The results above use a disturbance window of steps 40–160. Measuring the task's own phase
+timings showed first cube contact at median step **154** and transfer completion at **278** —
+so those disturbances fired almost entirely *before the cube was grasped*. Two of the four
+kinds did essentially nothing (`grasp_slip` opened a gripper holding nothing; `occlusion`
+barely matters to a policy running on proprioception). The window is now 150–280, magnitudes
+are calibrated, and only the two effective kinds are used.
+
+Re-labelling under that regime (in progress; 42 of 80 episodes at time of writing):
+
+| dataset | episodes | states | pooled Spearman | MAE vs baseline |
+|---|---|---|---|---|
+| v1 — window 40–160, 4 kinds | 80 | 990 | 0.660 | 0.199 / 0.414 |
+| **v2 — window 150–280, 2 kinds** | **42** | **528** | **0.667** | **0.181 / 0.432** |
+
+**The corrected disturbances reach the same predictive quality from half the episodes.**
+Notably this is *not* because the labels became less saturated — v1 was 84% of R values at
+exactly 0 or 1, v2 is 86%. Reversibility on this task is close to genuinely binary either
+way; what changed is that perturbing the manipulation produces states whose recoverability
+is actually predictable, where perturbing the approach did not.
+
+Also measured: under this regime the published fixed horizon drops from 65% to **39%**
+success, so the disturbances finally leave real headroom for a controller to exploit.
+
 ### Generalisation to unseen episodes
 
 Every `gated_oof` episode in the table above comes from the *labelled* set — held out from
