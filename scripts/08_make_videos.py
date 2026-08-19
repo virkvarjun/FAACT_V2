@@ -90,6 +90,9 @@ def main() -> int:
     ap.add_argument("--max-pairs", type=int, default=3)
     ap.add_argument("--fps", type=int, default=50)
     ap.add_argument("--head", default=str(ARTIFACTS / "reversibility_head.pt"))
+    ap.add_argument("--compare-fixed", type=int, nargs=2, default=None,
+                    metavar=("H_A", "H_B"),
+                    help="film two fixed horizons against each other instead of fixed vs gated")
     ap.add_argument("--out-dir", default=str(ARTIFACTS / "videos"))
     args = ap.parse_args()
 
@@ -104,16 +107,26 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from importlib import import_module
 
-    scorer = import_module("06_run_ablation").load_scorer(Path(args.head))
+    scorer = None if args.compare_fixed else import_module("06_run_ablation").load_scorer(Path(args.head))
 
     policy = ACTWrapper(CHECKPOINT, device="cpu")
     env = make_env()
 
-    conditions = {
-        f"fixed h={args.baseline_h}": lambda: fixed(args.baseline_h),
-        f"reversibility-gated (gamma={args.gamma})":
-            lambda: reversibility_gated(scorer, h_min=args.h_min, gamma=args.gamma),
-    }
+    # Either compare two fixed horizons (--compare-fixed A B) or a fixed baseline against
+    # the gated controller. The two-fixed mode exists to film the measured cliff: h=5 scores
+    # 0/40 while h=40 scores 49%, and that is the project's clearest single result.
+    if args.compare_fixed:
+        a, b = args.compare_fixed
+        conditions = {
+            f"fixed h={a}": (lambda v: lambda: fixed(v))(a),
+            f"fixed h={b}": (lambda v: lambda: fixed(v))(b),
+        }
+    else:
+        conditions = {
+            f"fixed h={args.baseline_h}": lambda: fixed(args.baseline_h),
+            f"reversibility-gated (gamma={args.gamma})":
+                lambda: reversibility_gated(scorer, h_min=args.h_min, gamma=args.gamma),
+        }
 
     pairs, written = [], 0
     with timed("video rendering") as t:
@@ -148,7 +161,8 @@ def main() -> int:
                     label_frames(a.frames, spec.onset_step, names[0], a.success),
                     label_frames(b.frames, spec.onset_step, names[1], b.success),
                 )
-                path = out_dir / f"compare_seed{seed}_{spec.kind}.mp4"
+                tag = "cliff" if args.compare_fixed else "gated"
+                path = out_dir / f"{tag}_seed{seed}_{spec.kind}.mp4"
                 iio.imwrite(path, np.stack(frames), fps=args.fps, codec="libx264")
                 written += 1
                 print(f"      -> wrote {path}", flush=True)
