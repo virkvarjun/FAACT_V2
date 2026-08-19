@@ -11,6 +11,13 @@ commit short and keep the option to react.
 
 `gamma > 1` makes the controller more conservative — it shortens the horizon sooner as R
 falls. gamma is a reported hyperparameter, not a tuned-until-pretty one.
+
+**Measured caveat, and it is the project's main result.** Shortening the horizon is not a
+free safety lever: for a chunked policy it costs motion quality, and on this task success is
+close to monotone in the mean committed horizon (ρ=0.94 under calibrated disturbances). Gating
+therefore pays only where states are at risk but *still recoverable*. Where most disturbed
+states are already unrecoverable, the intervention has nothing to act on and only its cost
+remains — an oracle fed ground-truth R still loses to a fixed h=100. See the README.
 """
 
 from __future__ import annotations
@@ -19,8 +26,17 @@ from typing import Callable
 
 import numpy as np
 
-H_MIN = 5
+# Floor for a gated horizon. NOT 5, which is where the map's range naturally ends: fixed
+# h=5 measured 0/30 on this task. ACT emits absolute joint targets, so replanning every few
+# steps makes each new chunk jump to a different target and the motion falls apart. A
+# controller whose floor sits in that regime is punished for reacting, which inverts the
+# intent of gating. h=20 measured 33% and h=100 measured 47%, so even 20 is not free.
+H_MIN = 20
 H_MAX = 100
+
+# The absolute lower bound the map will accept, kept only so the collapse regime can be
+# measured deliberately (see the horizon sweep) rather than wandered into by default.
+H_FLOOR = 5
 
 # A scorer maps (timestep, features) to a scalar in [0, 1].
 Scorer = Callable[[int, dict], float]
