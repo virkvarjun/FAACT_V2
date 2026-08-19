@@ -71,3 +71,26 @@ def test_ablation_bars_render_every_condition(tmp_path):
     out = tmp_path / "ablation.png"
     plot_ablation_bars(rows, out)
     assert out.exists() and out.with_suffix(".svg").exists()
+
+
+def test_horizon_curve_renders_with_adaptive_points(tmp_path):
+    """The project's central figure: fixed-horizon curve with controllers overlaid."""
+    from faact.viz.figures import plot_horizon_curve
+
+    out = tmp_path / "curve.png"
+    plot_horizon_curve(
+        np.array([5, 20, 40, 60, 80, 100]),
+        np.array([0.0, 0.33, 0.40, 0.43, 0.45, 0.47]),
+        out,
+        gated_points=[(43, 0.39, "oracle γ=1"), (50, 0.46, "gated γ=1")],
+    )
+    assert out.exists() and out.with_suffix(".svg").exists()
+
+
+def test_horizon_curve_sorts_unordered_input(tmp_path):
+    """Conditions arrive in table order, not horizon order; the line must not zig-zag."""
+    from faact.viz.figures import plot_horizon_curve
+
+    out = tmp_path / "curve2.png"
+    plot_horizon_curve(np.array([100, 5, 40]), np.array([0.47, 0.0, 0.40]), out)
+    assert out.exists()

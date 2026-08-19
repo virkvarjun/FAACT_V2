@@ -134,6 +134,46 @@ def plot_ablation_bars(rows: list[dict], path: Path, title: str = "") -> None:
     _save(fig, path)
 
 
+def plot_horizon_curve(
+    horizons: np.ndarray,
+    success: np.ndarray,
+    path: Path,
+    gated_points: list[tuple[float, float, str]] | None = None,
+    title: str = "",
+) -> None:
+    """Figure 5: success against committed horizon, with adaptive controllers overlaid.
+
+    The project's central figure. If the fixed-horizon points trace a rising curve and every
+    adaptive controller lands *on* it rather than above it, then the controller's cleverness
+    bought nothing — what determined success was simply how long it committed. Plotting the
+    adaptive points in the same axes is what makes that visible rather than asserted.
+    """
+    h = np.asarray(horizons, dtype=float)
+    s = np.asarray(success, dtype=float)
+    order = np.argsort(h)
+    h, s = h[order], s[order]
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.2))
+    ax.plot(h, s, "o-", color=C_REV, lw=2.2, ms=6, label="fixed horizon", zorder=3)
+
+    if gated_points:
+        gh = [p[0] for p in gated_points]
+        gs = [p[1] for p in gated_points]
+        ax.scatter(gh, gs, s=90, marker="D", color=C_ONSET, zorder=4,
+                   label="adaptive controllers (mean horizon)")
+        for x, y, label in gated_points:
+            ax.annotate(label, (x, y), textcoords="offset points", xytext=(8, 6),
+                        fontsize=7.5, color=C_ONSET)
+
+    ax.set_xlabel("committed horizon (steps)")
+    ax.set_ylabel("success rate under perturbation")
+    ax.set_ylim(-0.03, max(0.6, float(s.max()) * 1.25))
+    ax.set_title(title or "Success is a function of how long the policy commits")
+    ax.legend(loc="lower right", fontsize=8, frameon=False)
+    ax.grid(True, color=GREY, alpha=.18, lw=.6)
+    _save(fig, path)
+
+
 def _save(fig, path: Path) -> None:
     """Write PNG for slides and SVG for the site, then release the figure."""
     path = Path(path)
