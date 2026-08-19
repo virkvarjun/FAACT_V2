@@ -1,13 +1,21 @@
 # FAACT v2 — reversibility-gated execution horizons
 
-Testing one claim in simulation:
+The claim under test:
 
 > **Reversibility, not uncertainty, is the right control variable for chunked imitation policies.**
 
-An [ACT](https://arxiv.org/abs/2304.13705) policy predicts ~100 actions at a time and executes them open-loop,
-so it is blind to disturbance for the whole committed horizon. We estimate **reversibility** `R(s)` — the
-probability the task still succeeds if we replan from `s` right now — and use that single scalar to set the
-commitment horizon: `h = clip(5, 100, round(100 · R̂^γ))`.
+**Measured answer: only within an operating regime, and we found its edge.**
+
+An [ACT](https://arxiv.org/abs/2304.13705) policy predicts ~100 actions at a time and executes them
+open-loop, so it is blind to disturbance for the whole committed horizon. We measure **reversibility**
+`R(s)` — the probability the task still succeeds if we replan from `s` right now — by branch rollout,
+and use it to set the commitment horizon: `h = clip(h_min, 100, round(100 · R̂^γ))`.
+
+Under weak, mistimed disturbances, gating on ground-truth R beats the published fixed horizon
+(77% vs 65%, p=0.013). Under correctly-timed calibrated ones it **loses** (39% vs 47%), and success
+becomes an almost perfect function of how long the controller commits (ρ=0.94). Shortening the
+horizon is a costly intervention for a chunked policy; it only pays where states are at risk but
+still recoverable.
 
 Task: `gym_aloha/AlohaTransferCube-v0`, ALOHA bimanual cube transfer, simulation only.
 
@@ -15,19 +23,23 @@ Task: `gym_aloha/AlohaTransferCube-v0`, ALOHA bimanual cube transfer, simulation
 
 ## Status
 
-This table is the source of truth for what has actually been run. Nothing is claimed here that was not
-measured; empty cells mean not yet run.
+This table is the source of truth for what has actually been run. Every number here was measured;
+the gates that failed are marked as failed.
 
 | Milestone | What it delivers | Gate | Status |
 |---|---|---|---|
 | M-init | Repo, packaging, docs | — | ✅ done |
-| M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS (macOS dev box; not yet run on the L40S) |
-| M1 | ACT checkpoint + honest baseline | reproduce LeRobot's official per-seed results | ✅ **48/50 = 96% agreement**, rates match at 76.0% |
-| M2 | Perturbation suite | perturbed success in 25–65% band | ⚠️ **in band (50%), but by post-hoc check, not a sweep** |
-| M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.83 → 0.57**, 990 states / 80 eps |
-| M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ✅ **0.660** (5-fold pooled, 80 eps) |
-| M5 | Horizon control + ablation | table with n stated | ✅ learned gating ❌ **not significant**; **oracle R beats both baselines (80% vs 65/61%, p≈0.04)** |
-| M6 | Figures | — | 🟡 fig 1 done, rest pending run 2 |
+| M0 | Environment + headless MuJoCo | `00_setup_check.py` prints PASS | ✅ 6/6 PASS — macOS/CPU only, **CUDA path untested** |
+| M1 | ACT checkpoint + honest baseline | reproduce LeRobot's official per-seed results | ✅ **48/50 agreement**, rates match at 76.0% |
+| M2 | Perturbation suite | in 25–65% band **and** ≥15pt drop | ❌ **2 of 4 kinds effective**; `occlusion` and `grasp_slip` are no-ops here |
+| M3 | Reversibility labels via branch rollout | bitwise-deterministic restore; R drops after onset | ✅ **0.78 → 0.24**, 1000 states / 78 eps (plus 990 / 80 in regime A) |
+| M4 | Reversibility head | Spearman(pred, empirical) ≥ 0.5 on held-out episodes | ✅ **0.693** (5-fold pooled, 78 eps) |
+| M5 | Horizon control + ablation | table with n stated | ❌ **no gain under calibrated disturbances**; all p ≥ 0.061 |
+| M6 | Figures + videos | — | ✅ 4 figures, side-by-side videos |
+
+**Headline:** the reversibility estimate was never the bottleneck (0.479 → 0.660 → 0.693 across three
+datasets, with control performance unmoved). The binding constraint is the density of
+recoverable-but-at-risk states. See [Headline result](#headline-result--the-method-has-an-operating-regime-and-we-measured-its-edge).
 
 ### M1 baseline, verified against LeRobot's official evaluation
 
@@ -261,37 +273,71 @@ that shows no difference.
 
 ---
 
+## Reproducing every number
+
+Each script is a milestone gate: it prints `GATE: PASS|FAIL`, writes its evidence to
+`artifacts/`, and exits non-zero on failure.
+
+```bash
+python scripts/00_setup_check.py --allow-no-cuda   # environment
+python scripts/01_verify_act_checkpoint.py         # M1: per-seed vs LeRobot's official eval
+python scripts/03_calibrate_perturbations.py       # M2: which disturbances actually work
+python scripts/04_label_reversibility.py \
+    --episodes 80 --workers 3 \
+    --kinds object_displace actuation_noise \
+    --shard-dir artifacts/reversibility_shards_v2  # M3: ~3h on 3 performance cores
+python scripts/05_train_reversibility.py \
+    --shards artifacts/reversibility_shards_v2     # M4: 5-fold CV, seconds
+python scripts/06_run_ablation.py --episodes 80 --skip-gated --h-min 20 \
+    --gammas 1.0 2.0 --fixed-hs 100 20 \
+    --oracle-shards artifacts/reversibility_shards_v2 \
+    --oof-heads artifacts/reversibility_heads_oof.pt   # M5: ~45min
+python scripts/07_make_figures.py                  # M6
+python scripts/08_make_videos.py                   # side-by-side comparisons
+python scripts/progress.py --shards <dir> --total 80   # status of a running label job
+```
+
+Long jobs go under `nohup`/`tmux` — a background-task timeout killed one 90-minute run
+mid-flight. Per-episode shards made that cost nothing: it resumed from disk with no
+recomputation.
+
+**Running it on a laptop.** `faact/thermal.py` pauses work when macOS reports thermal
+pressure, caps workers at performance-cores-minus-one, and pins each worker to a single torch
+thread. Across ~9 hours of labelling the machine never left "fair" and never needed a pause.
+The single most important knob is the thread pinning: without it, N workers each spawn a pool
+sized to the whole machine and contend, which is slower than running serially and hotter.
+
+---
+
 ## What exists right now
 
 ```
 faact/
-  backbone/act_wrapper.py   # ACT chunk prediction + forward-hook feature extraction
+  backbone/act_wrapper.py   # ACT chunk prediction + forward-hook features
   envs/make.py              # env factory, ALOHA constants
-  envs/perturb.py           # 4 perturbation kinds + specs
+  envs/perturb.py           # 4 perturbation kinds, calibrated magnitudes
   envs/state.py             # snapshot / restore / re-observe / cube teleport
   runtime/executor.py       # ChunkExecutor — controllable commitment horizon
-  runtime/controller.py     # horizon policies: fixed, score-gated, oracle
-  eval/runner.py            # run_episode -> EpisodeResult
-  eval/metrics.py           # success, interventions, horizon, lead time, false alarms
+  runtime/controller.py     # fixed, score-gated, reversibility-gated, oracle
   labeling/branch_rollout.py  # measure R(s) by snapshot-restore-replay
-scripts/
-  00_setup_check.py         # M0 gate
-  01_verify_act_checkpoint.py  # M1 gate — per-seed reproduction of the official eval
-  02_eval_baseline.py       # unperturbed success rate at a fixed horizon
-  03_calibrate_perturbations.py  # M2 gate — magnitude sweep into the 25-65% band
-tests/                      # 68 tests; markers `sim` (MuJoCo) and `policy` (checkpoint)
-docs/
-  FAACT_v2_plan.md          # three-day build plan, scope calls, and cuts
-  CLAUDE_BUILD_PROMPT.md    # milestone spec this repo is built against
-CLAUDE.md                   # working rules (measurement honesty, no silent fallbacks)
+  labeling/dataset.py       # episode-level splits, k-fold, feature groups
+  models/reversibility.py   # MLP head, soft-target BCE
+  models/calibration.py     # isotonic calibration (measured not to help)
+  eval/{runner,metrics,ablation}.py
+  viz/figures.py
+  thermal.py                # thermal governor for long laptop runs
+scripts/                    # 00-08, one per gate, plus progress.py
+tests/                      # 146 tests; markers `sim` (MuJoCo), `policy` (checkpoint)
+docs/                       # the three-day plan and the milestone spec
 ```
-
-Not yet written: `labeling/dataset.py`, `models/reversibility.py`, `eval/ablation.py`, `viz/`, and scripts
-`04`–`07`. The Status table above is authoritative.
 
 ## Setup
 
-Development is on CPU (macOS included); training and branch rollouts need the GPU box.
+Everything in this repo ran on a MacBook (Apple M5) with no GPU. That is a measured claim, not
+a convenience: MuJoCo steps at ~84 steps/s while an ACT forward pass takes ~76 ms, so a
+250-step branch rollout is 2.96 s of simulation against 0.23 s of policy. **Branch-rollout
+labelling is CPU-bound by roughly 13×, and an accelerator buys almost nothing** — what matters
+is performance-core count. The CUDA path exists and is device-agnostic, but is untested.
 
 ```bash
 uv venv --python 3.10
