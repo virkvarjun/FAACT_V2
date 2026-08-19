@@ -162,6 +162,48 @@ At n=60 only gaps of ~20 pp are detectable, and the differences in play are 5–
 **This is an underpowered design, not evidence of no effect** — and equally, no support for
 the claim.
 
+### Why it cannot work here: the horizon lever has no traction
+
+A direct sweep of seven fixed horizons on one set of episodes (n=37 aligned, calibrated
+disturbances) explains every negative result above.
+
+| horizon | success | | horizon | success |
+|---|---|---|---|---|
+| 5 | 0/37 = 0% | | 60 | 14/37 = 38% |
+| 10 | 1/37 = 3% | | 80 | 15/37 = 41% |
+| 20 | 11/37 = 30% | | 100 | 13/37 = 35% |
+| 40 | 18/37 = 49% | | | |
+
+**A cliff, then a plateau.**
+
+| comparison | discordant | p |
+|---|---|---|
+| h=5 vs h=40 | 0 vs 18 | **0.00001** |
+| h=10 vs h=40 | 0 vs 17 | **0.00002** |
+| h=5 vs h=20 | 0 vs 11 | **0.00098** |
+| anything above h=20 | — | all **p ≥ 0.092** |
+
+Spearman(horizon, success) is +0.68 across the whole range but **+0.10 for h ≥ 20**. Below
+about 20 steps the policy collapses outright; above it, horizon does not measurably change
+anything. These cliff comparisons are the only results in the project that survive Bonferroni
+correction.
+
+Every gated controller — learned and oracle alike — operated at a **mean horizon of 41–56**,
+which is inside the plateau. So:
+
+> The commitment horizon is not an effective control variable for this task. Success is flat
+> in horizon everywhere above the collapse threshold, so a controller can only *lose* by
+> approaching the cliff and cannot *gain* by moving within the plateau. This holds regardless
+> of what the horizon is gated on — which is why an oracle fed ground-truth reversibility
+> performs no better than a fixed horizon.
+
+**This corrects an earlier claim in this repo.** From six scattered ablation conditions I
+reported ρ=0.94 and described success as monotone in mean horizon. The sweep shows that was an
+artifact of the endpoints: the relationship is a threshold, not a ramp. Reversibility may well
+be the right *signal*; the horizon is the wrong *actuator*.
+
+![success vs committed horizon](artifacts/figures/fig5_horizon_curve.svg)
+
 ### Headline result — the method has an operating regime, and we measured its edge
 
 Two ablations, on two disturbance regimes, reach opposite conclusions. Both are reported,

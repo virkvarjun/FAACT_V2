@@ -82,7 +82,7 @@ def test_horizon_curve_renders_with_adaptive_points(tmp_path):
         np.array([5, 20, 40, 60, 80, 100]),
         np.array([0.0, 0.33, 0.40, 0.43, 0.45, 0.47]),
         out,
-        gated_points=[(43, 0.39, "oracle γ=1"), (50, 0.46, "gated γ=1")],
+        operating_band=(41, 56),
     )
     assert out.exists() and out.with_suffix(".svg").exists()
 

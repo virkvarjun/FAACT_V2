@@ -138,15 +138,19 @@ def plot_horizon_curve(
     horizons: np.ndarray,
     success: np.ndarray,
     path: Path,
-    gated_points: list[tuple[float, float, str]] | None = None,
+    operating_band: tuple[float, float] | None = None,
     title: str = "",
 ) -> None:
-    """Figure 5: success against committed horizon, with adaptive controllers overlaid.
+    """Figure 5: success against committed horizon, and where adaptive controllers sit.
 
-    The project's central figure. If the fixed-horizon points trace a rising curve and every
-    adaptive controller lands *on* it rather than above it, then the controller's cleverness
-    bought nothing — what determined success was simply how long it committed. Plotting the
-    adaptive points in the same axes is what makes that visible rather than asserted.
+    The project's central figure. It shows a cliff below ~20 steps and a plateau above it,
+    with the band marking the mean horizons every adaptive controller actually operated at.
+    They all land inside the plateau, where horizon does not change success — which is why
+    no gating policy, however well informed, could gain anything.
+
+    The band shows *where* the controllers operated, not how well they scored. Their success
+    rates come from a different seed set than this sweep and are not comparable on one axis;
+    plotting them as points would invite exactly that false comparison.
     """
     h = np.asarray(horizons, dtype=float)
     s = np.asarray(success, dtype=float)
@@ -156,14 +160,10 @@ def plot_horizon_curve(
     fig, ax = plt.subplots(figsize=(7.0, 4.2))
     ax.plot(h, s, "o-", color=C_REV, lw=2.2, ms=6, label="fixed horizon", zorder=3)
 
-    if gated_points:
-        gh = [p[0] for p in gated_points]
-        gs = [p[1] for p in gated_points]
-        ax.scatter(gh, gs, s=90, marker="D", color=C_ONSET, zorder=4,
-                   label="adaptive controllers (mean horizon)")
-        for x, y, label in gated_points:
-            ax.annotate(label, (x, y), textcoords="offset points", xytext=(8, 6),
-                        fontsize=7.5, color=C_ONSET)
+    if operating_band:
+        lo, hi = operating_band
+        ax.axvspan(lo, hi, color=C_ONSET, alpha=.12, zorder=1,
+                   label=f"where every gated controller operated ({lo:.0f}\u2013{hi:.0f})")
 
     ax.set_xlabel("committed horizon (steps)")
     ax.set_ylabel("success rate under perturbation")
