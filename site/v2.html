@@ -5,7 +5,8 @@
 <a href="index.html">Contents</a>
 <a href="background.html">1 &middot; Action chunking</a>
 <a href="v1.html">2 &middot; FAACT v1</a>
-<a href="v2.html" class="here">3 &middot; FAACT v2</a></div></nav>
+<a href="v2.html" class="here">3 &middot; FAACT v2</a>
+<a href="glossary.html">Glossary</a></div></nav>
 
 <div class="wrap stack" style="padding-top:52px">
   <p class="eyebrow">Chapter 3</p>
@@ -35,7 +36,77 @@
 </section>
 
 <section class="wrap stack">
-  <h2>Methodology, step by step</h2>
+  <h2>3.2 &nbsp;How reversibility is actually measured</h2>
+  <p style="color:var(--ink-2)">This is the core primitive, and it is deliberately not a model.
+  The simulator is asked the question directly, by being replayed.</p>
+  <pre>for each perturbed episode:
+    for t in 0, 25, 50, ... :
+        s = snapshot(simulator)          # full state, see the traps below
+        wins = 0
+        for m in 1..8:                   # 8 independent branches
+            restore(simulator, s)
+            wins += rollout_to_end(policy, replanning from scratch)
+        R[t] = wins / 8</pre>
+  <p style="color:var(--ink-2)">The fraction of branches that still succeed <b>is</b> R at that
+  state. No proxy, no learned surrogate, no assumption — just the simulator answering.</p>
+
+  <div class="card stack-sm">
+    <h3>Trap 1: what "snapshot the simulator" has to include</h3>
+    <p style="color:var(--ink-2)">The obvious call is dm_control's <code>physics.get_state()</code>
+    — 45 numbers: joint positions, velocities, actuator state. <b>It is not enough.</b> It omits
+    the constraint solver's <em>warm-start cache</em>, the previous iteration's solution that
+    MuJoCo uses as a starting guess.</p>
+    <p style="color:var(--ink-2)">Restore without it and the solver begins from a different guess.
+    Two branches from an identical snapshot then diverged by 2&times;10<sup>&minus;8</sup> within
+    150 steps, growing from there. The fix is MuJoCo's own
+    <code>mjSTATE_INTEGRATION</code> — <b>262 numbers instead of 45</b>. Branches are then
+    bitwise identical, which is asserted by a test.</p>
+  </div>
+
+  <div class="card stack-sm">
+    <h3>Trap 2: state that lives outside the simulator</h3>
+    <p style="color:var(--ink-2)">The episode step counter lives in a <em>gym wrapper</em>, not in
+    MuJoCo. Restoring physics leaves it running. Measured consequence, from a snapshot at step
+    120:</p>
+    <pre>branch 0:  ran 280 steps
+branch 1:  ran   1 step      &larr; counter already at the limit
+branch 2:  ran   1 step</pre>
+    <p style="color:var(--ink-2)">Every branch after the first was truncated immediately, so R
+    would have silently collapsed to <em>(did branch 0 win?) / 8</em> — a number that looks like a
+    probability and is not one. Nothing raised an error. The snapshot now carries the counter too,
+    and a test asserts all branches get equal step budgets.</p>
+  </div>
+
+  <div class="card stack-sm">
+    <h3>Trap 3: a deterministic policy makes 8 branches pointless</h3>
+    <p style="color:var(--ink-2)">Restore is now bitwise exact and ACT is deterministic
+    (<a href="background.html">chapter 1.3</a>). So all 8 branches would replay
+    <em>identically</em>, and R could only ever be 0 or 1 — a "probability" welded to one side.</p>
+    <p style="color:var(--ink-2)">Each branch therefore adds small Gaussian noise to its actions.
+    The scale has to be chosen carefully: large enough to spread outcomes, small enough that it
+    does not itself change what the policy can do. Measured on 20 unperturbed episodes:</p>
+    <pre>noise 0.0   &rarr; 13/20 = 65%    identical to baseline (rollout path is faithful)
+noise 0.01  &rarr; 13/20 = 65%    &larr; chosen
+noise 0.02  &rarr;  8/20 = 40%    already destructive; would bias every label down
+noise 0.05  &rarr;  0/20 =  0%</pre>
+  </div>
+
+  <div class="card stack-sm">
+    <h3>Trap 4: measurement noise could have been the whole story</h3>
+    <p style="color:var(--ink-2)">R comes from only 8 branches, so it carries binomial error of its
+    own. Before blaming the model for a mediocre fit, this was checked: treat the measured R as the
+    true probability, draw two <em>independent</em> re-measurements with 8 branches each, and see
+    how well they agree.</p>
+    <p style="color:var(--ink-2)">They correlate at <b>0.977</b> — because 86% of R values sit at
+    exactly 0 or 1, where re-measurement is nearly deterministic. So label noise was
+    <em>not</em> the limit, and raising the branch count would have bought nothing. That single
+    check redirected effort toward more episodes instead of more branches, which is what actually
+    improved the model.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>3.3 &nbsp;Methodology, step by step</h2>
   <ol class="steps">
     <li><b>Get a working baseline and prove it.</b> Rather than checking against a threshold, the
     policy was compared <em>seed for seed</em> against the reference implementation's published
@@ -143,6 +214,84 @@
       <tr><td class="lead">fixed h=20</td><td>25/76 &nbsp;33%</td><td>19.3</td><td>20</td><td class="ns">p = 0.061</td></tr>
     </tbody>
   </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>3.7 &nbsp;How the comparisons were tested</h2>
+  <p style="color:var(--ink-2)">Every condition runs the <em>same</em> episodes with the
+  <em>same</em> disturbances, so the outcomes are <b>paired</b>. That matters for which test is
+  appropriate.</p>
+  <div class="card stack-sm">
+    <h3>McNemar rather than a two-proportion test</h3>
+    <p style="color:var(--ink-2)">Comparing 36/76 against 30/76 as two independent proportions
+    throws away the pairing and loses power. McNemar's test looks only at the episodes where the
+    two conditions <b>disagreed</b>:</p>
+    <pre>episodes where A won and B lost:   x
+episodes where B won and A lost:   y
+episodes where both agreed:        ignored — they carry no information
+
+under the null hypothesis, x ~ Binomial(x+y, 0.5)</pre>
+    <p style="color:var(--ink-2)">So "oracle vs fixed h=100: 2 vs 12, p=0.013" means: of the 14
+    episodes where they differed, the oracle won 12. Agreements are discarded because an episode
+    both controllers win tells you nothing about which is better.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>Why nothing here survives correction</h3>
+    <p style="color:var(--ink-2)">Six controllers means <span class="num">15</span> pairwise
+    comparisons. Running 15 tests at &alpha;=0.05 means an expected <span class="num">0.75</span>
+    false positives even if every condition were identical. A Bonferroni correction demands
+    <span class="num">p &lt; 0.05/15 = 0.0033</span>.</p>
+    <p style="color:var(--ink-2)">Only the cliff results clear that bar
+    (<span class="num">p = 0.00001</span>). Every reversibility-related result &mdash; including
+    the oracle win that briefly looked like a positive finding &mdash; sits between 0.013 and
+    1.000 and does <b>not</b> survive.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>The experiment is underpowered, and by how much</h3>
+    <p style="color:var(--ink-2)">Given the measured rate of disagreement between conditions
+    (~40% of episodes), the episodes needed <em>per condition</em> to detect a true difference
+    with 80% power:</p>
+    <div class="scroll"><table>
+      <thead><tr><th>True gap</th><th>Episodes needed</th><th>We ran</th></tr></thead>
+      <tbody>
+        <tr><td>5 points</td><td>~1250</td><td class="ns">37&ndash;79</td></tr>
+        <tr><td>10 points</td><td>~308</td><td class="ns">37&ndash;79</td></tr>
+        <tr><td>15 points</td><td>~133</td><td class="ns">37&ndash;79</td></tr>
+        <tr><td>20 points</td><td>~72</td><td class="sig">borderline reachable</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note warn"><b>"Not significant" here means "underpowered", not "no effect".</b> The
+    design can only resolve gaps of roughly 20 points, and the differences in play are 5&ndash;11.
+    That cuts both ways: it is equally not evidence <em>for</em> the method.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>3.8 &nbsp;Two regimes, opposite answers</h2>
+  <p style="color:var(--ink-2)">One result deserves special attention because it briefly looked
+  like success, and because understanding why it reversed is more instructive than either number
+  alone.</p>
+  <div class="scroll"><table>
+    <thead><tr><th></th><th>Regime A</th><th>Regime B</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">Disturbance window</td><td>steps 40&ndash;160</td><td>steps 150&ndash;280</td></tr>
+      <tr><td class="lead">When the cube is first grasped</td><td colspan="2">median step <b>154</b></td></tr>
+      <tr><td class="lead">So disturbances landed</td><td>mostly <b>before</b> the grasp</td><td>during the grasp</td></tr>
+      <tr><td class="lead">Post-onset states already unrecoverable</td><td>39%</td><td>75%</td></tr>
+      <tr class="hi"><td class="lead"><b>oracle vs fixed h=100</b></td><td><b>77% vs 65%</b> (p=0.013)</td><td><b>39% vs 47%</b> (p=0.109)</td></tr>
+      <tr><td class="lead">Correlation of horizon with success</td><td>&minus;0.03</td><td>+0.94</td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--ink-2)">In regime A, disturbances hit while the robot was still reaching
+  through free space &mdash; recoverable, and a controller that shortened selectively could help.
+  In regime B they hit during manipulation, where three quarters of disturbed states are already
+  lost. Once a state is unrecoverable, no horizon policy can save it, so the intervention has
+  nothing to act on and only its cost remains.</p>
+  <p class="note warn"><b>A methodological warning that generalises.</b> Both regimes sit inside
+  the 25&ndash;65% perturbed-success band normally used to calibrate disturbance strength, and
+  they behave oppositely. <b>Calibrating disturbances by success rate does not guarantee a useful
+  distribution of recoverable states</b> &mdash; the band belongs on the fraction of states that
+  are still saveable.</p>
 </section>
 
 <section class="wrap stack">

@@ -1,0 +1,107 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glossary — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html">Contents</a>
+<a href="background.html">1 &middot; Action chunking</a>
+<a href="v1.html">2 &middot; FAACT v1</a>
+<a href="v2.html">3 &middot; FAACT v2</a>
+<a href="glossary.html" class="here">Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">Reference</p>
+  <h1>Glossary and quick reference</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">Every term used across these notes, plus the
+  commands to reproduce each result.</p>
+</div>
+
+<section class="wide stack">
+  <div class="wrap"><h2>Terms</h2></div>
+  <div class="scroll"><table>
+    <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td class="lead"><b>Action chunk</b></td><td class="lead">A sequence of k future actions predicted in one forward pass. Here k=100, about 2 seconds at 50 Hz.</td></tr>
+      <tr><td class="lead"><b>Commitment horizon (h)</b></td><td class="lead">How many steps of a chunk are actually executed before replanning. h=100 means executing the whole chunk blind; h=20 means replanning five times as often. <b>The quantity this project tries to control.</b></td></tr>
+      <tr><td class="lead"><b>Open-loop</b></td><td class="lead">Executing without looking at new observations. A chunk executed at h=100 is open-loop for 100 steps.</td></tr>
+      <tr><td class="lead"><b>Covariate shift</b></td><td class="lead">The mismatch between the states a policy was trained on (the expert's) and the states it actually visits (its own). The root cause of compounding error.</td></tr>
+      <tr><td class="lead"><b>Compounding error</b></td><td class="lead">Small mistakes push the policy off-distribution, where it makes bigger mistakes. Grows like &epsilon;T&sup2; in the horizon rather than &epsilon;T.</td></tr>
+      <tr><td class="lead"><b>ACT</b></td><td class="lead">Action Chunking Transformer. A CVAE with a transformer decoder that outputs a whole chunk at once. 51.6M parameters in this checkpoint.</td></tr>
+      <tr><td class="lead"><b>CVAE latent (z)</b></td><td class="lead">A 32-d variable ACT uses during training to absorb the variability in human demonstrations. Set to zero at inference, which is why ACT is deterministic at test time.</td></tr>
+      <tr><td class="lead"><b>Temporal ensembling</b></td><td class="lead">Replanning every step and averaging overlapping chunk predictions with exponentially decaying weights. Off throughout this project.</td></tr>
+      <tr><td class="lead"><b>MC-dropout</b></td><td class="lead">Leaving dropout active at inference so repeated forward passes differ. v1 used it to manufacture candidate chunks from a deterministic policy.</td></tr>
+      <tr><td class="lead"><b><code>failure_within_k</code></b></td><td class="lead">v1's monitor target: "will this episode fail within k steps?" Measures proximity to termination, not recoverability.</td></tr>
+      <tr class="hi"><td class="lead"><b>Reversibility R(s)</b></td><td class="lead">v2's target: the probability the task still succeeds if you replan from state s right now. Measured by snapshotting the simulator and replaying to completion 8 times.</td></tr>
+      <tr><td class="lead"><b>Branch rollout</b></td><td class="lead">The procedure that measures R: snapshot, restore, replan, run to the end, repeat, count successes.</td></tr>
+      <tr><td class="lead"><b>Point of no return</b></td><td class="lead">The first timestep after which R never again rises above 0.5. A <em>permanent</em> crossing — a dip the policy recovers from does not count.</td></tr>
+      <tr><td class="lead"><b>Oracle condition</b></td><td class="lead">The controller fed ground-truth measured R instead of a prediction. An upper bound on what gating could achieve; not itself achievable.</td></tr>
+      <tr><td class="lead"><b>Out-of-fold (OOF)</b></td><td class="lead">Scoring each episode with a model from the cross-validation fold that never trained on it. Makes the learned controller comparable to the oracle without reading its own training data.</td></tr>
+      <tr><td class="lead"><b>&gamma; (gamma)</b></td><td class="lead">Exponent in the horizon map h = clip(h_min, 100, 100·R̂^&gamma;). Higher &gamma; shortens the horizon sooner as R falls.</td></tr>
+      <tr><td class="lead"><b>Spearman &rho;</b></td><td class="lead">Rank correlation. Used because the controller only needs the <em>ordering</em> of states to be right.</td></tr>
+      <tr><td class="lead"><b>McNemar's test</b></td><td class="lead">A paired test that looks only at episodes where two conditions disagreed. Appropriate here because all conditions run identical episodes.</td></tr>
+      <tr><td class="lead"><b>Bonferroni correction</b></td><td class="lead">Dividing the significance threshold by the number of comparisons. With 15 pairwise tests the bar becomes p &lt; 0.0033.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap"><h2>Reproducing each result</h2>
+  <p style="color:var(--ink-2)">Each script is a gate: it prints <code>GATE: PASS|FAIL</code>,
+  writes its evidence to <code>artifacts/</code>, and exits non-zero on failure.</p></div>
+  <div class="wrap"><pre># environment — must print PASS for every check
+python scripts/00_setup_check.py --allow-no-cuda
+
+# does our ACT match the reference implementation, seed for seed?
+python scripts/01_verify_act_checkpoint.py          # &rarr; 48/50 agreement
+
+# which disturbances actually do anything?
+python scripts/03_calibrate_perturbations.py        # &rarr; 2 of 4 kinds effective
+
+# measure reversibility (~3 hours on 3 performance cores)
+python scripts/04_label_reversibility.py \
+    --episodes 80 --workers 3 \
+    --kinds object_displace actuation_noise \
+    --shard-dir artifacts/reversibility_shards_v2
+
+# can a model predict it?  (seconds)
+python scripts/05_train_reversibility.py \
+    --shards artifacts/reversibility_shards_v2      # &rarr; rho = 0.693
+
+# does gating on it help?  (~45 min)
+python scripts/06_run_ablation.py --episodes 80 --skip-gated --h-min 20 \
+    --gammas 1.0 2.0 --fixed-hs 100 20 \
+    --oracle-shards artifacts/reversibility_shards_v2 \
+    --oof-heads artifacts/reversibility_heads_oof.pt
+
+# the horizon sweep — the result that explains everything
+python scripts/06_run_ablation.py --episodes 40 --skip-gated \
+    --fixed-hs 5 10 20 40 60 80 100
+
+python scripts/07_make_figures.py                   # figures
+python scripts/08_make_videos.py --compare-fixed 5 40   # the cliff, filmed
+python scripts/progress.py --shards &lt;dir&gt; --total 80   # watch a running job</pre></div>
+  <div class="wrap"><p class="note"><b>All of this runs on a laptop CPU.</b> MuJoCo steps at
+  ~84/s while an ACT forward pass takes ~76 ms, so branch-rollout labelling is CPU-bound by
+  roughly 13&times; and a GPU buys almost nothing. What matters is performance-core count.</p></div>
+</section>
+
+<section class="wrap stack">
+  <h2>Two things these notes correct</h2>
+  <div class="card stack-sm">
+    <h3>"100,000 rollouts"</h3>
+    <p style="color:var(--ink-2)">The figure 100K in this project refers to <b>ACT training
+    steps</b> — the <code>step_100000</code> checkpoint from a training run. v1's evaluations were
+    <b>20 and 10 episodes</b>. Rollout counts in this work are in the tens, not the thousands;
+    the largest single campaign was 158 labelled episodes.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>"an entropy function"</h3>
+    <p style="color:var(--ink-2)">There is <b>no entropy term anywhere</b> in v2. The quantity it
+    measures is reversibility, computed by replaying the simulator from a snapshot. The
+    distinction matters conceptually: entropy or uncertainty asks <em>"does the policy know what
+    to do?"</em>, while reversibility asks <em>"does it still matter?"</em> A state can be
+    perfectly unambiguous and completely unrecoverable.</p>
+  </div>
+</section>
+
+<div class="wrap pager"><a href="v2.html">&larr; FAACT v2</a><a href="index.html">Contents</a></div>
+</body></html>

@@ -5,105 +5,162 @@
 <a href="index.html">Contents</a>
 <a href="background.html">1 &middot; Action chunking</a>
 <a href="v1.html" class="here">2 &middot; FAACT v1</a>
-<a href="v2.html">3 &middot; FAACT v2</a></div></nav>
+<a href="v2.html">3 &middot; FAACT v2</a>
+<a href="glossary.html">Glossary</a></div></nav>
 
 <div class="wrap stack" style="padding-top:52px">
   <p class="eyebrow">Chapter 2</p>
   <h1>FAACT v1 — detect risk, pick a safer chunk</h1>
-  <p style="font-size:1.15rem;color:var(--ink-2)">The first attempt. It measured zero successes
-  out of twenty, and the reason was not the idea.</p>
+  <p style="font-size:1.15rem;color:var(--ink-2)">The first attempt measured zero successes out
+  of twenty. The reason was not the idea — it was that the experiment's central manipulation was
+  never implemented, and nothing in the pipeline noticed.</p>
 </div>
 
 <section class="wrap stack">
-  <h2>The plan</h2>
-  <p style="color:var(--ink-2)">If a chunked policy is blind while executing, then give it a
-  monitor. Predict when the current trajectory is heading for failure, and when it is, replace
-  the chunk with a safer alternative.</p>
-  <ol class="steps">
-    <li><b>Train the policy.</b> An action-chunking policy on the ALOHA transfer-cube task.
-    (The checkpoint referred to as "100K" is <em>100,000 training steps</em> — this is a
-    training-length figure, not a number of rollouts.)</li>
-    <li><b>Train a monitor.</b> A small MLP over the policy's internal features, predicting
-    <code>failure_within_k</code> — "will this episode fail within the next k steps?"</li>
-    <li><b>Generate candidate chunks at runtime.</b> Since ACT is deterministic, you cannot
-    just sample it repeatedly. v1 manufactured variety by perturbing the observation and by
-    <b>MC-dropout</b> — running the network with dropout active so each pass differs.</li>
-    <li><b>Score and select.</b> Run every candidate chunk through the monitor and execute
-    whichever is predicted least likely to fail.</li>
-  </ol>
-  <p class="note">The shape of this is reasonable and it mirrors published work: detect, then
-  intervene. The failure is in the details.</p>
+  <h2>2.1 &nbsp;The reasoning</h2>
+  <p style="color:var(--ink-2)">From <a href="background.html">chapter 1</a>: a chunked policy is
+  blind for 100 steps at a time. The natural fix is a <b>monitor</b> — a second model that
+  watches for trouble — plus an <b>intervention</b> for when the monitor fires.</p>
+  <p style="color:var(--ink-2)">This mirrors a real literature. Failure prediction for robot
+  policies is an active area, and "detect, then intervene" is the standard shape. v1's specific
+  bet was that if you can generate several candidate chunks and score them, you can pick a safer
+  one before committing.</p>
 </section>
 
 <section class="wrap stack">
-  <h2>What it measured</h2>
+  <h2>2.2 &nbsp;The pipeline in detail</h2>
+  <ol class="steps">
+    <li><b>Train the policy.</b> An action-chunking policy on ALOHA transfer-cube. The checkpoint
+    referred to as "100K" is <b>100,000 gradient steps</b> of training — a training-length figure,
+    not a count of rollouts. (The committed evaluation numbers in v1 were actually produced by a
+    &pi;<sub>0</sub> policy rather than ACT, despite the write-up describing ACT throughout.)</li>
+
+    <li><b>Generate labels for a failure predictor.</b> Roll out episodes, record which ones fail,
+    and label each timestep with <code>failure_within_k</code>: <em>will this episode fail within
+    the next k steps?</em> This gives a binary target at every step of every episode.</li>
+
+    <li><b>Train the monitor.</b> A small MLP over features extracted from the policy's internals
+    — the same kind of forward-hook features v2 later reuses — mapping state to predicted risk.</li>
+
+    <li><b>Manufacture candidate chunks at runtime.</b> Here is the subtle part. ACT is
+    <b>deterministic at inference</b> (chapter 1.3: the CVAE latent is zeroed), so you cannot get
+    variety by sampling it repeatedly. v1 produced variety two ways:
+      <ul>
+        <li><b>Observation perturbation</b> — jitter the input image or state slightly and
+        re-run, so each pass sees a marginally different world.</li>
+        <li><b>MC-dropout</b> — keep dropout active at inference (p=0.1) instead of disabling it,
+        so each forward pass randomly drops different units and produces a slightly different
+        chunk. This is a standard trick for extracting uncertainty estimates from a deterministic
+        network.</li>
+      </ul>
+    </li>
+
+    <li><b>Score and select.</b> Push every candidate through the monitor, take the one with the
+    lowest predicted risk, execute it. When the monitor's risk crossed a threshold, this
+    substitution was triggered as an "intervention".</li>
+  </ol>
+  <p class="note">Nothing here is unreasonable. The components are individually sensible and the
+  overall shape matches published approaches. It still produced nothing, for four separate
+  reasons.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>2.3 &nbsp;What it measured</h2>
   <div class="scroll"><table>
-    <thead><tr><th>Condition</th><th>Result</th></tr></thead>
+    <thead><tr><th>Condition</th><th>Result</th><th>What it should have told us</th></tr></thead>
     <tbody>
-      <tr><td class="lead">Baseline, no intervention</td><td>0 / 20</td></tr>
-      <tr><td class="lead">Monitor running, no intervention</td><td>0 / 20</td></tr>
-      <tr><td class="lead">Best intervention configuration</td><td>1 / 10</td></tr>
-      <tr class="hi"><td class="lead"><b>Recoveries after an intervention</b></td><td><b>0, in every run</b></td></tr>
+      <tr class="hi"><td class="lead"><b>Baseline, no intervention</b></td><td><b>0 / 20</b></td><td class="lead">stop everything — there is no headroom</td></tr>
+      <tr><td class="lead">Monitor on, no intervention</td><td>0 / 20</td><td class="lead">monitoring alone changes nothing (expected)</td></tr>
+      <tr><td class="lead">Best intervention config</td><td>1 / 10</td><td class="lead">indistinguishable from noise at this n</td></tr>
+      <tr><td class="lead">Recoveries after intervention</td><td>0, every run</td><td class="lead">the intervention never once rescued an episode</td></tr>
     </tbody>
   </table></div>
-  <p class="note warn">A <b>0% baseline</b> is the number to stare at. If the policy never
-  succeeds even when undisturbed, there is no headroom: no intervention can demonstrate an
-  improvement over a floor of zero, and every subsequent measurement is uninformative.</p>
+  <p class="note warn"><b>A 0% baseline invalidates everything downstream.</b> If the policy never
+  succeeds even undisturbed, no intervention can demonstrate an improvement over a floor of zero.
+  Every subsequent comparison is measuring noise. This number alone should have halted the project
+  before any intervention was evaluated.</p>
 </section>
 
 <section class="wrap stack">
-  <h2>The four root causes</h2>
+  <h2>2.4 &nbsp;The four root causes</h2>
+
   <div class="stack">
     <div class="card stack-sm">
-      <h3>1. The disturbances were never implemented</h3>
-      <p style="color:var(--ink-2)">There was a <code>--perturbation_mode</code> flag. It was an
-      unused placeholder. <b>Nothing was ever disturbed.</b> So the "failures" being detected
-      were just a weak policy failing on its own, not recoverable incidents — there was nothing
-      to recover <em>from</em>, which is why recoveries were zero by construction.</p>
+      <h3>1 &middot; The disturbances were never implemented</h3>
+      <p style="color:var(--ink-2)">There was a command-line flag,
+      <code>--perturbation_mode</code>. It was parsed, stored, and never used. <b>Nothing was
+      ever disturbed in any run.</b></p>
+      <p style="color:var(--ink-2)">So every "failure" the monitor was detecting was simply a weak
+      policy failing on its own — not a recoverable incident. There was nothing to recover
+      <em>from</em>, which makes "0 recoveries" true by construction rather than a finding.</p>
+      <p class="note">The insidious part: the pipeline ran to completion, wrote videos, computed
+      metrics and produced a results table. <b>A flag that does nothing looks exactly like a flag
+      that works.</b></p>
     </div>
+
     <div class="card stack-sm">
-      <h3>2. No headroom</h3>
-      <p style="color:var(--ink-2)">With a 0% baseline, every comparison is measuring noise
-      against zero. The experiment could not have produced a positive result even if the method
-      were perfect.</p>
+      <h3>2 &middot; No headroom</h3>
+      <p style="color:var(--ink-2)">Related but distinct. Even with working disturbances, a policy
+      at 0% unperturbed has nowhere to go. Measuring an intervention requires a baseline that
+      sometimes succeeds and sometimes does not, so that a method has room to move the number in
+      either direction.</p>
+      <p style="color:var(--ink-2)">v2's equivalent requirement became an explicit gate: the
+      undisturbed policy must clear a threshold <em>before</em> anything else runs, and
+      disturbances must land the success rate in a band — not at the floor.</p>
     </div>
+
     <div class="card stack-sm">
-      <h3>3. The monitor predicted the wrong thing</h3>
-      <p style="color:var(--ink-2)"><code>failure_within_k</code> means "am I near the end of an
-      episode that failed". That is <b>proximity to termination</b>, not recoverability. It
-      fires when things are already over, which is exactly when intervening cannot help. The
-      quantity you actually want is "would intervening still help?" — which is what
-      <a href="v2.html">v2</a> tries to measure.</p>
+      <h3>3 &middot; The monitor predicted the wrong quantity</h3>
+      <p style="color:var(--ink-2)"><code>failure_within_k</code> asks <em>"am I near the end of an
+      episode that is going to fail?"</em>. Read that carefully — it is a measure of
+      <b>proximity to termination</b>, not of recoverability.</p>
+      <p style="color:var(--ink-2)">Those come apart badly. A state can be:</p>
+      <ul>
+        <li><b>Far from failure but already doomed</b> — the cube has been knocked out of reach at
+        step 50; the episode will not end for another 300 steps, so the label says "safe".</li>
+        <li><b>Near failure but perfectly recoverable</b> — the timer is running out but the robot
+        is holding the cube correctly.</li>
+      </ul>
+      <p style="color:var(--ink-2)">A monitor trained on this fires when the episode is nearly
+      over, which is exactly when intervening cannot help. The quantity you want is
+      <em>"would intervening still change the outcome?"</em> &mdash; which is what
+      <a href="v2.html">v2</a> defines as reversibility and measures directly.</p>
     </div>
+
     <div class="card stack-sm">
-      <h3>4. The candidate chunks were not useful</h3>
-      <p style="color:var(--ink-2)">Perturbing the input of a <em>deterministic</em> policy
-      produces chunks that are all small variations on the same motion. They do not span the
-      space of recovery behaviours — if the correct response is "let go, back off, re-approach",
-      no amount of jittering the observation will produce it. v1's own conclusion was that
-      <b>the bottleneck was action usefulness, not action scoring</b>.</p>
+      <h3>4 &middot; The candidate chunks could not recover</h3>
+      <p style="color:var(--ink-2)">This is the deepest one. Perturbing the inputs of a
+      deterministic network produces chunks that are <b>small variations on the same motion</b>.
+      MC-dropout does the same: it samples around the model's existing behaviour, not away from
+      it.</p>
+      <p style="color:var(--ink-2)">But recovery is usually a <em>qualitatively different</em>
+      motion. If the correct response to a dropped cube is "open the gripper, back off, re-approach
+      from another angle", no amount of jittering the observation will produce that — it is not a
+      nearby point in the space the policy already covers. The candidates do not
+      <b>span the recovery manifold</b>.</p>
+      <p class="note warn">v1's own conclusion, and the sharpest sentence in its write-up:
+      <b>"the bottleneck is action usefulness, not just action scoring."</b> A perfect scorer over
+      a set of useless options still selects a useless option.</p>
     </div>
   </div>
 </section>
 
 <section class="wrap stack">
-  <h2>What to take from it</h2>
-  <ul>
-    <li><b>A flag that does nothing looks exactly like a flag that works.</b> The pipeline ran,
-    produced numbers, wrote videos, and reported metrics — all while the central experimental
-    manipulation was absent.</li>
-    <li><b>Check the baseline before believing anything downstream.</b> 0/20 should have halted
-    the project on day one rather than being reported alongside intervention results.</li>
-    <li><b>Selecting among bad options is not an intervention.</b> If none of your candidates
-    can recover, a perfect scorer changes nothing.</li>
-    <li><b>The repository could not be run.</b> The runtime loop lived in an untracked package
-    and a submodule was pinned to a commit that did not exist upstream, so a fresh clone could
-    not reproduce anything.</li>
-  </ul>
-  <p class="note good">Every one of these became a design constraint in v2: disturbances are
-  asserted to change the world, the baseline is verified against a reference implementation
-  episode by episode, the target quantity is recoverability rather than proximity to failure,
-  and every acceptance check is fixed before the run.</p>
+  <h2>2.5 &nbsp;What v1 taught the rebuild</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>v1 failure</th><th>v2 countermeasure</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">Disturbance flag silently did nothing</td><td class="lead">every disturbance object tracks whether it fired; the runner <b>raises</b> if an episode finishes without it firing</td></tr>
+      <tr><td class="lead">0% baseline was reported, not acted on</td><td class="lead">baseline is a blocking gate, verified <em>seed for seed</em> against the reference implementation</td></tr>
+      <tr><td class="lead">Wrong target quantity</td><td class="lead">reversibility is defined operationally and measured by replaying the simulator, not inferred from a proxy label</td></tr>
+      <tr><td class="lead">Candidates could not recover</td><td class="lead">stop trying to pick a better action; change <em>how long the policy commits</em> instead</td></tr>
+      <tr><td class="lead">Repo could not be run at all</td><td class="lead">no submodules, pinned dependencies, and a setup check that must print PASS before anything else runs</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note good"><b>The most useful thing v1 produced was its own post-mortem.</b> The four
+  causes above are more informative than a marginal success would have been, and the arc
+  "measured zero &rarr; diagnosed why &rarr; rebuilt around the diagnosis" is the spine of the
+  whole project.</p>
 </section>
 
 <div class="wrap pager"><a href="background.html">&larr; Action chunking</a><a href="v2.html">Next: FAACT v2 &rarr;</a></div>

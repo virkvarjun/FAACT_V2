@@ -5,109 +5,197 @@
 <a href="index.html">Contents</a>
 <a href="background.html" class="here">1 &middot; Action chunking</a>
 <a href="v1.html">2 &middot; FAACT v1</a>
-<a href="v2.html">3 &middot; FAACT v2</a></div></nav>
+<a href="v2.html">3 &middot; FAACT v2</a>
+<a href="glossary.html">Glossary</a></div></nav>
 
 <div class="wrap stack" style="padding-top:52px">
   <p class="eyebrow">Chapter 1</p>
   <h1>Action chunking, and why it works</h1>
-  <p style="font-size:1.15rem;color:var(--ink-2)">Before any of the FAACT work makes sense, you
-  need the problem action chunking solves and the price it charges.</p>
+  <p style="font-size:1.15rem;color:var(--ink-2)">The problem it solves, the mechanism by which
+  it solves it, how ACT is assembled internally, and the reactivity it trades away. Every number
+  in the architecture section was read off the actual checkpoint used in this project.</p>
 </div>
 
 <section class="wrap stack">
-  <h2>The problem: compounding error</h2>
-  <p style="color:var(--ink-2)">Behaviour cloning trains a policy to copy a human: given the
-  robot's observation, output the action the demonstrator took. Train it with supervised
-  learning, run it on the robot. It fails in a specific and famous way.</p>
-  <p style="color:var(--ink-2)">The training data only contains states the <em>human</em>
-  visited. The moment the policy makes a small error it lands slightly off that distribution —
-  in a state no demonstration covered. Its next prediction is now a guess, which produces a
-  larger error, which lands it further off-distribution. Errors feed on themselves.</p>
+  <h2>1.1 &nbsp;Behaviour cloning and covariate shift</h2>
+  <p style="color:var(--ink-2)">Behaviour cloning is supervised learning on demonstrations.
+  Collect pairs of (observation, action) from a human teleoperating the robot, fit
+  <span class="num">&pi;(a|o)</span> to predict the human's action, deploy. It is the simplest
+  possible approach and it has one deep flaw.</p>
+
   <div class="card stack-sm">
-    <h3>Why it compounds rather than averaging out</h3>
-    <p style="color:var(--ink-2)">This is <b>covariate shift</b>: the state distribution the
-    policy induces is not the one it was trained on, and the mismatch grows with every step.
-    The classic analysis says that if a policy makes a mistake with probability &epsilon; per
-    step, cloning error over a horizon of <span class="num">T</span> steps grows like
-    <span class="num">&epsilon;T&sup2;</span> rather than <span class="num">&epsilon;T</span> —
-    quadratic, because each error also makes future errors more likely.</p>
-    <p class="note"><b>The key term is T</b> — the number of decisions. Anything that reduces
-    how many independent decisions the policy makes over an episode attacks the problem
-    directly.</p>
+    <h3>The train/test distribution mismatch</h3>
+    <p style="color:var(--ink-2)">Supervised learning assumes training and test data come from
+    the same distribution. In control this is <em>false by construction</em>. Your training
+    states were visited by the <b>expert</b>. Your test states are visited by <b>your policy</b>.
+    The moment the policy differs from the expert at all, it starts visiting a different
+    distribution of states than the one it was trained on.</p>
+    <p style="color:var(--ink-2)">This is <b>covariate shift</b>, and it is self-reinforcing: an
+    error moves you off-distribution, where the policy is less reliable, which produces a bigger
+    error, which moves you further off.</p>
   </div>
+
+  <h3 style="margin-top:16px">Why the error is quadratic in the horizon</h3>
+  <p style="color:var(--ink-2)">The standard analysis (Ross &amp; Bagnell, the work that
+  motivated DAgger) makes the cost precise. Suppose the policy takes a wrong action with
+  probability at most <span class="num">&epsilon;</span> on states drawn from the expert's own
+  distribution — a very ordinary supervised-learning guarantee.</p>
+  <pre>expert distribution:      error grows like   &epsilon; &middot; T      (linear, benign)
+policy's own distribution: error grows like   &epsilon; &middot; T&sup2;     (quadratic)</pre>
+  <p style="color:var(--ink-2)">The intuition for the extra factor of <span class="num">T</span>:
+  a mistake at step <span class="num">t</span> does not just cost you that step. It can put you
+  in an unfamiliar state for <em>all remaining</em> <span class="num">T&minus;t</span> steps.
+  Summing that over every possible point of first failure gives the square.</p>
+  <p class="note"><b>The lever is T.</b> The number of <em>decisions</em> is what the quadratic
+  is quadratic in. Cut the number of decisions and you attack compounding error directly, without
+  needing a better model, more data, or online expert correction.</p>
 </section>
 
 <section class="wrap stack">
-  <h2>The idea: predict a chunk, not a step</h2>
-  <p style="color:var(--ink-2)">Instead of predicting one action, predict the next
-  <span class="num">k</span> actions as a single unit and execute them open-loop. In ACT,
-  <span class="num">k = 100</span> — roughly two seconds of motion at 50&nbsp;Hz.</p>
-  <p style="color:var(--ink-2)">A 400-step episode is then not 400 decisions but
-  <span class="num">400 / 100 = 4</span>. That is the whole trick: <b>chunking cuts the
-  effective horizon by a factor of k</b>, and with it the compounding-error term.</p>
+  <h2>1.2 &nbsp;Chunking: predict k actions, decide k times less often</h2>
+  <p style="color:var(--ink-2)">Instead of mapping an observation to one action, map it to the
+  next <span class="num">k</span> actions and execute them open-loop. In ACT,
+  <span class="num">k = 100</span> — about two seconds at 50&nbsp;Hz.</p>
+  <pre>step-by-step   400 observations &rarr; 400 actions   =  400 decisions
+chunked k=100    4 observations &rarr; 400 actions   =    4 decisions</pre>
+  <p style="color:var(--ink-2)">A 400-step episode becomes <b>4 decisions instead of 400</b>. If
+  compounding error scales with the number of decisions, dividing that count by 100 is a large
+  and essentially free win. That is the primary argument for chunking.</p>
 
-  <h3 style="margin-top:12px">It also fixes a second, less obvious problem</h3>
-  <p style="color:var(--ink-2)">Human demonstrations contain pauses and hesitation. At a single
-  timestep, a paused demonstrator looks identical whether they are about to move left, move
-  right, or keep waiting — the same observation maps to several valid actions. A step-level
-  policy trained on that averages them, and averaging incompatible actions often produces
-  <em>stopping</em>. Policies get stuck.</p>
-  <p style="color:var(--ink-2)">Predicting a whole chunk sidesteps this: the ambiguity lives at
-  the level of "which of several motions", and a chunk commits to one of them coherently
-  instead of blending them into paralysis.</p>
+  <div class="card stack-sm">
+    <h3>The second problem chunking fixes: multimodality at pauses</h3>
+    <p style="color:var(--ink-2)">Human demonstrations are full of hesitation. Consider a
+    demonstrator who pauses for half a second before grasping. Across the dataset, that same
+    paused image is labelled with <em>many different actions</em> — keep waiting, start reaching,
+    adjust slightly.</p>
+    <p style="color:var(--ink-2)">A step-level policy trained with a regression loss on that data
+    learns the <b>average</b> of those actions. The average of "wait" and "move" is "barely
+    move". So the policy stalls at exactly the moments the human hesitated — a very common and
+    very frustrating BC failure.</p>
+    <p style="color:var(--ink-2)">Chunking helps because the ambiguity is resolved once, at the
+    level of a whole motion, rather than independently at every timestep. The policy commits to
+    one coherent two-second motion instead of averaging incompatible micro-decisions 100 times in
+    a row.</p>
+  </div>
+
+  <p class="note warn"><b>Keep this failure mode in mind.</b> "Averaging produces a policy that
+  barely moves" reappears in <a href="v2.html">chapter 3</a> in a different guise, and it is the
+  most surprising result in the project.</p>
 </section>
 
 <section class="wrap stack">
-  <h2>How ACT is actually built</h2>
-  <p style="color:var(--ink-2)">ACT (Action Chunking Transformer) is a conditional VAE with a
-  transformer inside. Numbers below are read directly off the checkpoint used in this project
-  (<code>lerobot/act_aloha_sim_transfer_cube_human</code>, 51.6M parameters).</p>
+  <h2>1.3 &nbsp;How ACT is actually built</h2>
+  <p style="color:var(--ink-2)">ACT is a <b>conditional variational autoencoder</b> whose decoder
+  is a transformer. Every value below was read directly off
+  <code>lerobot/act_aloha_sim_transfer_cube_human</code>, the checkpoint used throughout this
+  project.</p>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Hyperparameter</th><th>Value</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">chunk_size</td><td>100</td><td class="lead">actions predicted per forward pass</td></tr>
+      <tr><td class="lead">n_action_steps</td><td>100</td><td class="lead">how many are actually executed — the full chunk</td></tr>
+      <tr><td class="lead">dim_model</td><td>512</td><td class="lead">transformer width</td></tr>
+      <tr><td class="lead">n_heads</td><td>8</td><td class="lead">attention heads</td></tr>
+      <tr><td class="lead">dim_feedforward</td><td>3200</td><td class="lead">MLP width inside each block</td></tr>
+      <tr><td class="lead">n_encoder_layers</td><td>4</td><td class="lead">transformer encoder depth</td></tr>
+      <tr class="hi"><td class="lead"><b>n_decoder_layers</b></td><td><b>1</b></td><td class="lead">see the note below — this surprises people</td></tr>
+      <tr><td class="lead">latent_dim</td><td>32</td><td class="lead">size of the CVAE style variable</td></tr>
+      <tr><td class="lead">kl_weight</td><td>10.0</td><td class="lead">weight on the KL term in the loss</td></tr>
+      <tr><td class="lead">vision_backbone</td><td>resnet18</td><td class="lead">ImageNet-pretrained</td></tr>
+      <tr><td class="lead">dropout</td><td>0.1</td><td class="lead">used by v1's MC-dropout trick</td></tr>
+    </tbody>
+  </table></div>
+
+  <p class="note"><b>Only one decoder layer.</b> The original paper describes a deeper decoder,
+  but the reference implementation uses a single layer and lerobot matches it. Worth knowing
+  because it means most of ACT's 51.6M parameters are <em>not</em> in the part that generates
+  actions.</p>
+
+  <h3 style="margin-top:14px">Parameter budget</h3>
+  <pre>total            51.6M
+  vision backbone   11.2M   ResNet-18
+  transformer enc   17.3M   4 layers x 512
+  VAE encoder       17.3M   4 layers x 512   (training only — discarded at inference)
+  transformer dec    5.4M   1 layer</pre>
+  <p style="color:var(--ink-2)">A third of the network exists only to be thrown away at test
+  time.</p>
+
+  <h3 style="margin-top:14px">The forward pass, token by token</h3>
   <ol class="steps">
-    <li><b>Vision backbone.</b> A ResNet-18 processes the 480&times;640 camera image. It
-    downsamples by 32, giving a 15&times;20 feature map — <b>300 image tokens</b> of 512
-    dimensions each.</li>
-    <li><b>Extra tokens.</b> The 14-dimensional joint state is projected to one token, and the
-    CVAE latent to another. Total input to the transformer encoder:
-    <b>302 tokens</b> — verified by hooking the model and reading the tensor shape
-    <code>(302, 1, 512)</code>.</li>
-    <li><b>Transformer encoder</b> mixes those 302 tokens into a representation of the scene.</li>
-    <li><b>Transformer decoder</b> takes <b>100 learned query embeddings</b> — one per action in
-    the chunk — and attends over the encoder output. Its output shape is
-    <code>(100, 1, 512)</code>.</li>
-    <li><b>Action head</b> projects each of the 100 decoder outputs to a 14-dimensional joint
-    command. The chunk is the whole <span class="num">100 &times; 14</span> matrix, produced in
-    one forward pass.</li>
+    <li><b>Image &rarr; tokens.</b> ResNet-18 takes the 480&times;640 camera frame and
+    downsamples by 32, giving a <span class="num">15&times;20</span> spatial feature map. Flatten
+    that and you have <b>300 image tokens</b>, each projected to 512 dimensions.</li>
+    <li><b>Proprioception &rarr; 1 token.</b> The 14-dimensional joint state (2 arms &times;
+    [6 joints + 1 gripper]) is projected to a single 512-d token.</li>
+    <li><b>Style &rarr; 1 token.</b> The 32-d CVAE latent is projected to one more token.</li>
+    <li><b>Encoder input = 302 tokens.</b> 300 + 1 + 1. Verified by attaching a forward hook and
+    reading the tensor: <code>(302, 1, 512)</code>. Positional embeddings are added — 2-D
+    sinusoidal for the image grid, learned for the two 1-D tokens.</li>
+    <li><b>Decoder = 100 learned queries.</b> One query embedding per action in the chunk. They
+    are <em>learned parameters</em>, not derived from input — the decoder's job is to turn "query
+    #37" into "the 37th action of this motion" by cross-attending to the encoder output. Verified
+    shape: <code>(100, 1, 512)</code>.</li>
+    <li><b>Action head.</b> A linear projection maps each of the 100 decoder outputs to 14 joint
+    commands. Output: a <span class="num">100 &times; 14</span> matrix, produced in one pass.</li>
   </ol>
+
   <div class="card stack-sm">
-    <h3>What the CVAE part is for</h3>
-    <p style="color:var(--ink-2)">During training an extra encoder sees the <em>ground-truth
-    action chunk</em> and compresses it into a latent variable. This gives the model somewhere to
-    put the variability in human demonstrations, so the main network is not forced to average
-    over it. At inference the latent is set to its prior mean (zero) — which is why ACT is
-    deterministic at test time, a fact that matters a lot in <a href="v1.html">chapter 2</a>.</p>
+    <h3>The CVAE half, and why it exists</h3>
+    <p style="color:var(--ink-2)">Section 1.2 said human demonstrations are multimodal and that
+    averaging them is harmful. The CVAE is ACT's mechanism for handling that inside the model.</p>
+    <p style="color:var(--ink-2)"><b>During training</b>, a separate 4-layer transformer encoder
+    sees the <em>ground-truth action chunk</em> and compresses it into a 32-dimensional latent
+    <span class="num">z</span>. The main network is then conditioned on <span class="num">z</span>.
+    This gives the model a place to store "which of the several valid ways of doing this was the
+    human doing", so it does not have to average them away.</p>
+    <p style="color:var(--ink-2)"><b>At inference</b>, there is no ground-truth chunk to encode,
+    so <span class="num">z</span> is set to the prior mean — <b>zero</b>. The VAE encoder is
+    discarded entirely.</p>
+    <p class="note warn"><b>Consequence: ACT is deterministic at test time.</b> Same observation
+    in, same chunk out, every time. This single fact is why <a href="v1.html">v1's candidate
+    sampling</a> could not work as intended.</p>
   </div>
-  <p class="note"><b>Actions are absolute joint positions</b>, not deltas. Each entry of the
-  chunk says "put the joints <em>here</em>", not "move by this much". That detail turns out to
-  cause the single most surprising result in <a href="v2.html">chapter 3</a>.</p>
+
+  <h3 style="margin-top:14px">The training loss</h3>
+  <pre>L  =  L1(predicted chunk, true chunk)  +  10.0 &middot; KL(q(z|chunk) || N(0,I))</pre>
+  <p style="color:var(--ink-2)"><b>L1 rather than L2</b> is a deliberate choice: L2 punishes large
+  errors quadratically, which pushes the model harder toward averaging when the data is
+  multimodal — precisely the failure chunking is meant to avoid. L1 tolerates committing to one
+  mode. The KL term keeps the latent close to its prior so that zeroing it at inference is a
+  reasonable thing to do.</p>
 </section>
 
 <section class="wrap stack">
-  <h2>The price: two seconds of blindness</h2>
-  <p style="color:var(--ink-2)">While executing a chunk, the policy is not looking. If the cube
-  is knocked at step 3 of a chunk, nothing can respond until step 100. Smoothness and
-  robustness-to-compounding-error are bought with reactivity.</p>
-  <p style="color:var(--ink-2)">The ACT paper offers one mitigation, <b>temporal ensembling</b>:
-  replan every step and average the overlapping predictions with exponentially decaying weights.
-  That restores reactivity at the cost of more computation — and it is <em>off</em> in this
-  project, deliberately, because the whole point is to study the commitment horizon as an
-  explicit, controllable quantity.</p>
+  <h2>1.4 &nbsp;The price: two seconds of blindness</h2>
+  <p style="color:var(--ink-2)">Executing a 100-step chunk open-loop means the policy does not
+  look at the world for 100 steps. Knock the cube at step 3 and nothing responds until step 100.
+  <b>Chunking buys smoothness and robustness to compounding error by spending reactivity.</b></p>
+
+  <h3>Temporal ensembling, the paper's mitigation</h3>
+  <p style="color:var(--ink-2)">ACT offers an option: replan <em>every</em> step, and because
+  chunks overlap, average all the predictions that apply to the current timestep with
+  exponentially decaying weights.</p>
+  <pre>a&#770;(t)  =  &Sigma;&#7522; w&#7522; &middot; a&#7522;(t)   with   w&#7522; &prop; exp(&minus;m &middot; i)
+
+where a&#7522;(t) is the prediction for time t made by the chunk generated i steps ago</pre>
+  <p style="color:var(--ink-2)">This restores per-step reactivity while keeping motion smooth,
+  at the cost of a forward pass every step instead of every 100.</p>
+  <p class="note"><b>It is switched off throughout this project</b>
+  (<code>temporal_ensemble_coeff = None</code> in the checkpoint), deliberately. The entire
+  subject of FAACT is the commitment horizon as an explicit, controllable quantity, and temporal
+  ensembling blurs what "committed for h steps" even means.</p>
+
   <div class="card stack-sm">
     <h3>Which sets up the question both FAACT versions ask</h3>
-    <p style="color:var(--ink-2)">If committing is good for smoothness but bad for reactivity,
-    the robot should presumably commit <em>less</em> when something has gone wrong. So: how do
-    you know when something has gone wrong, and what should you do about it?</p>
-    <p style="color:var(--ink-2)"><b>v1</b> answered: predict failure, and swap in a safer chunk.<br>
-    <b>v2</b> answered: measure recoverability, and shorten the commitment.</p>
+    <p style="color:var(--ink-2)">Committing is good for smoothness and bad for reactivity. So the
+    robot should presumably commit <em>less</em> when something has gone wrong. Two questions
+    follow: <b>how do you know something has gone wrong</b>, and <b>what should you do about
+    it?</b></p>
+    <p style="color:var(--ink-2)"><b>v1:</b> predict failure, and swap in a chunk scored as safer.<br>
+    <b>v2:</b> measure recoverability, and shorten the commitment.</p>
+    <p style="color:var(--ink-2)">v1 failed for reasons that turned out to be bugs. v2 failed for
+    a reason that turned out to be interesting.</p>
   </div>
 </section>
 
