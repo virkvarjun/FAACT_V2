@@ -70,6 +70,9 @@ class EpisodeResult:
     perturb: dict[str, Any] | None = None
     perturb_fired: bool = False
     frames: list[np.ndarray] = field(default_factory=list, repr=False)
+    # Per-step reward, recorded only alongside frames. Lets a video label what is true at
+    # each moment rather than stamping the final outcome onto every frame.
+    rewards: list[float] = field(default_factory=list, repr=False)
 
     @property
     def mean_horizon(self) -> float:
@@ -120,6 +123,7 @@ def run_episode(
     max_reward = 0.0
     success = False
     frames: list[np.ndarray] = []
+    rewards: list[float] = []
     t = 0
 
     for t in range(max_steps):
@@ -142,6 +146,8 @@ def run_episode(
 
         # 6. Advance the world.
         obs, reward, terminated, truncated, _ = env.step(action)
+        if record_frames:
+            rewards.append(float(reward))
         max_reward = max(max_reward, float(reward))
         if float(reward) >= SUCCESS_REWARD:
             success = True
@@ -172,6 +178,7 @@ def run_episode(
         perturb=perturb_spec.to_dict() if perturb_spec is not None else None,
         perturb_fired=perturbation.fired if perturbation is not None else False,
         frames=frames,
+        rewards=rewards,
     )
 
 

@@ -123,10 +123,11 @@ def build_conditions(scorer, gammas: list[float], h_min: int, fixed_hs: list[int
     """Ablation rows. Gated rows are omitted when no head is available.
 
     `h_min` is the floor the gated controller may shorten to, and it matters more than it
-    looks: fixed h=5 measured 0/30 on this task, because ACT emits absolute joint targets
-    and replanning that often — without temporal ensembling — makes each new chunk jump to
-    a different target and the motion falls apart. A gated controller whose floor sits in
-    that regime is penalised for reacting, which inverts the intent.
+    looks: fixed h=5 measured 0/40 on this task because the arm *stalls* there. An ACT chunk
+    begins at the current pose, so executing only its first few actions and replanning from a
+    barely-changed state re-emits a near-identical chunk — measured net joint displacement
+    0.16 at h=5 against 2.02 at h=100. A gated controller whose floor sits in that regime is
+    penalised for reacting, which inverts the intent.
     """
     conditions = [
         Condition(f"fixed h={h}", (lambda h: lambda _seed: fixed(h))(h), "fixed baseline")

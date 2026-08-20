@@ -183,6 +183,22 @@ disturbances) explains every negative result above.
 | h=5 vs h=20 | 0 vs 11 | **0.00098** |
 | anything above h=20 | — | all **p ≥ 0.092** |
 
+**What the cliff actually is: a stall, not a thrash.** The obvious guess — that frequent
+replanning produces jerky, self-destructive motion — is wrong, and watching the rollouts is what
+exposed it. An ACT chunk begins at the current pose, so executing only its first few actions and
+replanning from a barely-changed state re-emits a near-identical chunk. The arm creeps forward at
+a fraction of normal speed and runs out of time. Measured net joint displacement over an episode:
+
+| horizon | net displacement | per-seed |
+|---|---|---|
+| 5 | **0.16** | 0.15, 0.17, 0.16, 0.17, 0.16 |
+| 10 | 1.03 | 2.03, 0.16, 0.16, 1.57, 1.21 |
+| 20 | 1.95 | 2.05, 2.07, 2.03, 1.53, 2.09 |
+| 100 | 2.02 | 2.02, 2.04, 1.93, 2.05, 2.03 |
+
+h=5 stalls on every seed; h=10 stalls on some and not others; h≥20 always moves. That maps exactly
+onto the success curve (0% / 3% / 30%) — **the cliff is the stall threshold.**
+
 Spearman(horizon, success) is +0.68 across the whole range but **+0.10 for h ≥ 20**. Below
 about 20 steps the policy collapses outright; above it, horizon does not measurably change
 anything. These cliff comparisons are the only results in the project that survive Bonferroni
@@ -238,9 +254,9 @@ p ≥ 0.061). Success has become an almost perfect function of how long the cont
 commits: **ρ = +0.94**, with `fixed h=5` at 0/30 completing the curve.
 
 **The interpretation.** Shortening the commitment horizon is a costly intervention for a
-chunked policy — ACT emits absolute joint targets, so frequent replanning degrades the
-motion. That cost is only worth paying when there is a population of states that are *at
-risk but still recoverable*. In regime A such states are common and gating pays. In regime B
+chunked policy — at short horizons the arm stalls outright (see the cliff below). That cost
+is only worth paying when there is a population of states that are *at risk but still
+recoverable*. In regime A such states are common and gating pays. In regime B
 three quarters of disturbed states are already lost, the intervention has nothing to act on,
 and only its cost remains.
 

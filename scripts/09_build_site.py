@@ -151,10 +151,10 @@ footer{{margin-top:76px;padding-top:26px;border-top:1px solid var(--rule);
   </div>
   <div class="vids">
     {player("cliff_seed9203_actuation_noise.mp4", "commits 5 steps at a time", "commits 40 steps at a time",
-            "ACT outputs absolute joint targets. Replanning every 5 steps means each new chunk jumps to a slightly different target, and the motion tears itself apart before it can finish the transfer. Measured across 40 episodes: <b>h=5 succeeds 0 times</b>, h=40 succeeds 18 of 37. The orange flash marks the disturbance.",
+            "The left arm barely moves at all. An ACT chunk begins at the current pose, so committing only its first 5 actions and replanning from a barely-changed state re-emits a near-identical chunk &mdash; the arm creeps at a fraction of normal speed and runs out of time. Measured net joint displacement over an episode: <b>0.16 at h=5 against 2.02 at h=100</b>. Across 40 episodes h=5 succeeds <b>zero</b> times.",
             False, True)}
     {player("cliff_seed9201_actuation_noise.mp4", "commits 5 steps at a time", "commits 40 steps at a time",
-            "A second pair, same comparison. The short-horizon arm never completes a grasp at all &mdash; this is the failure mode behind the 0/40, not bad luck on one seed.",
+            "A second pair, same comparison. The stall is deterministic: h=5 produced a net displacement of 0.15&ndash;0.17 on every one of five seeds tested, while h=100 moved 1.93&ndash;2.05 on all of them. This is the failure mode behind the 0/40, not bad luck on one seed.",
             False, True)}
   </div>
 </section>
@@ -168,10 +168,10 @@ footer{{margin-top:76px;padding-top:26px;border-top:1px solid var(--rule);
     reversibility &mdash; shortening when it thinks recovery is becoming unlikely.</p>
   </div>
   <div class="vids">
-    {player("compare_seed8500_object_displace.mp4", "fixed, 100 steps", "reversibility-gated, 20&ndash;100",
+    {player("gated_seed8500_object_displace.mp4", "fixed, 100 steps", "reversibility-gated, 20&ndash;100",
             "The cube is teleported 2&nbsp;cm mid-grasp. The gated controller detects the drop in reversibility and shortens its commitment &mdash; and still fails, while the policy that simply committed and carried on succeeds.",
             True, False)}
-    {player("compare_seed8505_actuation_noise.mp4", "fixed, 100 steps", "reversibility-gated, 20&ndash;100",
+    {player("gated_seed8505_actuation_noise.mp4", "fixed, 100 steps", "reversibility-gated, 20&ndash;100",
             "Gaussian noise on the joint targets during transport. Same pattern. Across 79 episodes the gated controller wins 8 and loses 9 against the fixed horizon &mdash; <span class='num'>p&nbsp;=&nbsp;1.000</span>, a dead heat.",
             True, False)}
   </div>
@@ -210,8 +210,8 @@ footer{{margin-top:76px;padding-top:26px;border-top:1px solid var(--rule);
     <p class="eyebrow">Why it fails</p>
     <h2>The horizon is the wrong thing to control</h2>
     <p style="color:var(--ink-2)">Sweeping seven fixed commitment horizons over one set of episodes
-    gives a cliff and a plateau. Below about 20 steps the policy collapses. Above it, the horizon
-    does not measurably change anything at all.</p>
+    gives a cliff and a plateau. Below about 20 steps the arm stalls and the policy collapses.
+    Above it, the horizon does not measurably change anything at all.</p>
   </div>
   <div class="wrap"><div class="card">{curve}
     <p style="font-family:var(--mono);font-size:.74rem;color:var(--muted);margin-top:12px">

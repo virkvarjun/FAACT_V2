@@ -27,12 +27,28 @@ def test_pairing_holds_the_shorter_run_rather_than_truncating():
     assert out[0].shape == (32, 96, 3)
 
 
-def test_held_frames_repeat_the_final_state():
-    left = frames(3, 10)
-    left[-1][:] = 99
-    out = videos.stack_side_by_side(left, frames(6, 20))
-    # Columns 0:48 are the left run; after it ends they hold its last frame.
-    assert (out[5][:, :48] == 99).all()
+def test_held_frames_are_dimmed_and_marked_not_silently_frozen():
+    """A frozen panel must read as "this episode finished", not as a glitch.
+
+    Plain duplication looked like the simulation had hung, which is exactly how a reader
+    first interpreted it. Held frames are therefore darkened and captioned.
+    """
+    left = frames(3, 200, h=80, w=120)
+    out = videos.stack_side_by_side(left, frames(6, 20, h=80, w=120))
+
+    live = out[2][:, :120]
+    held = out[5][:, :120]
+    assert held.mean() < live.mean() * 0.8, "held frames must be visibly dimmed"
+    assert held.max() > 0, "dimming must not black the frame out entirely"
+
+
+def test_held_frames_derive_from_the_last_live_frame():
+    """Dimmed, but still the same picture — not a blank or a different frame."""
+    left = frames(3, 200, h=80, w=120)
+    out = videos.stack_side_by_side(left, frames(6, 20, h=80, w=120))
+    held = out[5][:, :120]
+    # 200 * 0.55 = 110; allow room for the caption text pixels.
+    assert 90 < np.median(held) < 130
 
 
 def test_equal_length_runs_are_paired_one_to_one():

@@ -12,12 +12,20 @@ commit short and keep the option to react.
 `gamma > 1` makes the controller more conservative — it shortens the horizon sooner as R
 falls. gamma is a reported hyperparameter, not a tuned-until-pretty one.
 
-**Measured caveat, and it is the project's main result.** Shortening the horizon is not a
-free safety lever: for a chunked policy it costs motion quality, and on this task success is
-close to monotone in the mean committed horizon (ρ=0.94 under calibrated disturbances). Gating
-therefore pays only where states are at risk but *still recoverable*. Where most disturbed
-states are already unrecoverable, the intervention has nothing to act on and only its cost
-remains — an oracle fed ground-truth R still loses to a fixed h=100. See the README.
+**Measured caveat, and it is the project's main result.** Success against horizon is a cliff
+and a plateau, not a ramp: h=5 scores 0/40, h=10 scores 3%, h=20 reaches 30%, and everything
+from 20 to 100 is statistically indistinguishable (all p >= 0.09).
+
+The cliff is a *stall*, not the thrashing one might expect. An ACT chunk begins at the current
+pose, so executing only its first few actions and replanning from a barely-changed state
+re-emits a near-identical chunk; the arm creeps forward at a fraction of normal speed and runs
+out of time. Measured net joint displacement over an episode: 0.16 at h=5 against 2.02 at
+h=100, identical across all five seeds tested, with h=10 bimodal right at the threshold.
+
+The consequence for gating: every controller operates inside the plateau, where horizon does
+not change success at all. It can only lose by approaching the cliff and cannot gain by moving
+within the flat — which is why an oracle fed ground-truth R does no better than a fixed
+horizon. See the README.
 """
 
 from __future__ import annotations
@@ -27,10 +35,9 @@ from typing import Callable
 import numpy as np
 
 # Floor for a gated horizon. NOT 5, which is where the map's range naturally ends: fixed
-# h=5 measured 0/30 on this task. ACT emits absolute joint targets, so replanning every few
-# steps makes each new chunk jump to a different target and the motion falls apart. A
-# controller whose floor sits in that regime is punished for reacting, which inverts the
-# intent of gating. h=20 measured 33% and h=100 measured 47%, so even 20 is not free.
+# h=5 measured 0/40 because the arm stalls there — net joint displacement 0.16 against 2.02
+# at h=100 (see the module docstring). A controller whose floor sits in that regime is
+# punished for reacting, which inverts the intent of gating.
 H_MIN = 20
 H_MAX = 100
 

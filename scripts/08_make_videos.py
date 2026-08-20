@@ -45,22 +45,32 @@ CHECKPOINT = "lerobot/act_aloha_sim_transfer_cube_human"
 ONSET_RANGE = (150, 280)
 
 
-def label_frames(frames: list[np.ndarray], onset: int, tag: str, success: bool) -> list[np.ndarray]:
+# ALOHA transfer-cube grades the task in stages; showing the live stage is far more
+# informative than a binary flag, and unlike the final outcome it is true when displayed.
+STAGE = {0: "approaching", 1: "touched cube", 2: "lifted", 3: "second gripper on", 4: "TRANSFERRED"}
+
+
+def label_frames(frames: list[np.ndarray], onset: int, tag: str, success: bool,
+                 rewards: list[float] | None = None) -> list[np.ndarray]:
     """Burn a caption bar and an onset flash into a frame sequence.
 
-    Rendered into the pixels rather than added as overlay tracks so the video is
-    self-describing wherever it ends up — a slide, a site, a Slack message.
+    The caption reports what is true *at that frame* — the task stage reached so far — not
+    the episode's final verdict. Stamping the outcome on every frame (which this did at
+    first) made a run read as "SUCCESS" from step 0, before the robot had done anything.
     """
     from PIL import Image, ImageDraw
 
     out = []
+    running = 0.0
     for t, frame in enumerate(frames):
+        if rewards is not None and t < len(rewards):
+            running = max(running, rewards[t])
+        stage = STAGE.get(int(running), "approaching")
         img = Image.fromarray(np.asarray(frame).copy())
         draw = ImageDraw.Draw(img)
-        colour = (60, 200, 90) if success else (220, 70, 70)
+        colour = (60, 200, 90) if running >= 4 else (215, 215, 215)
         draw.rectangle([0, 0, img.width, 28], fill=(20, 20, 20))
-        draw.text((8, 8), f"{tag}   t={t:>3}   {'SUCCESS' if success else 'FAILURE'}",
-                  fill=colour)
+        draw.text((8, 8), f"{tag}   t={t:>3}   {stage}", fill=colour)
         # Flash a border for a few steps at the disturbance so the eye catches it.
         if onset <= t < onset + 12:
             draw.rectangle([0, 0, img.width - 1, img.height - 1], outline=(255, 170, 0), width=6)
@@ -72,10 +82,25 @@ def stack_side_by_side(left: list[np.ndarray], right: list[np.ndarray]) -> list[
     """Pair frames horizontally, holding the last frame of whichever ends first.
 
     Holding rather than truncating keeps both runs visible to the end — truncating would
-    hide the outcome of the longer episode, which is usually the failure.
+    hide the outcome of the longer episode, which is usually the failure. A held frame is
+    dimmed and marked, so a frozen panel reads as "this episode finished" instead of
+    looking like the simulation glitched.
     """
+    from PIL import Image, ImageDraw
+
     n = max(len(left), len(right))
-    pad = lambda seq: seq + [seq[-1]] * (n - len(seq))  # noqa: E731
+
+    def pad(seq: list[np.ndarray]) -> list[np.ndarray]:
+        if len(seq) >= n:
+            return seq
+        frozen = []
+        for _ in range(n - len(seq)):
+            img = Image.fromarray((np.asarray(seq[-1]) * 0.55).astype(np.uint8))
+            draw = ImageDraw.Draw(img)
+            draw.text((8, img.height - 16), "episode ended", fill=(235, 190, 90))
+            frozen.append(np.asarray(img))
+        return seq + frozen
+
     return [np.concatenate([a, b], axis=1) for a, b in zip(pad(left), pad(right))]
 
 
@@ -158,8 +183,8 @@ def main() -> int:
 
             if diverged and written < args.max_pairs:
                 frames = stack_side_by_side(
-                    label_frames(a.frames, spec.onset_step, names[0], a.success),
-                    label_frames(b.frames, spec.onset_step, names[1], b.success),
+                    label_frames(a.frames, spec.onset_step, names[0], a.success, a.rewards),
+                    label_frames(b.frames, spec.onset_step, names[1], b.success, b.rewards),
                 )
                 tag = "cliff" if args.compare_fixed else "gated"
                 path = out_dir / f"{tag}_seed{seed}_{spec.kind}.mp4"
