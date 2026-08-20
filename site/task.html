@@ -1,0 +1,138 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The task — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html" >Contents</a>
+<a href="task.html" class="here">1 &middot; The task</a>
+<a href="background.html" >2 &middot; Action chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" >4 &middot; v2 method</a>
+<a href="v2-results.html" >5 &middot; v2 results</a>
+<a href="bugs.html" >6 &middot; Bugs</a>
+<a href="glossary.html" >Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">Chapter 1</p>
+  <h1>The task, the robot, and the data</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">Everything downstream is measured on one task.
+  Knowing exactly what it is — including how success is defined at the contact level — makes the
+  rest of these notes concrete instead of abstract.</p>
+</div>
+
+<section class="wrap stack">
+  <h2>1.1 &nbsp;ALOHA bimanual transfer-cube</h2>
+  <p style="color:var(--ink-2)">Two 6-DoF ViperX 300S arms face each other across a table. A red
+  cube sits somewhere on the right side. The robot must pick it up with the <b>right</b> arm, lift
+  it clear of the table, hand it to the <b>left</b> arm, and hold it there.</p>
+  <p style="color:var(--ink-2)">It is a genuinely bimanual task: neither arm can complete it
+  alone, and the handover requires both to be in the right place at the same time. That handover
+  is where most failures happen.</p>
+
+  <div class="scroll"><table>
+    <thead><tr><th>Property</th><th>Value</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">Simulator</td><td>MuJoCo</td><td class="lead">via dm_control, wrapped by gym-aloha</td></tr>
+      <tr><td class="lead">Control rate</td><td>50 Hz</td><td class="lead">DT = 0.02 s per step</td></tr>
+      <tr><td class="lead">Episode length</td><td>400 steps</td><td class="lead">8 seconds of wall-clock robot time</td></tr>
+      <tr><td class="lead">Action dimension</td><td>14</td><td class="lead">2 arms &times; (6 joints + 1 gripper)</td></tr>
+      <tr><td class="lead">Action semantics</td><td><b>absolute positions</b></td><td class="lead">"put joints here", not "move by this much"</td></tr>
+      <tr><td class="lead">Observation</td><td>480&times;640 RGB + 14-d state</td><td class="lead">a single overhead camera named <code>top</code></td></tr>
+      <tr><td class="lead">Simulator state</td><td>23 qpos, 22 qvel</td><td class="lead">16 arm joints + a 7-DoF free joint for the cube</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note warn"><b>"Absolute positions" is the single most load-bearing detail on this
+  page.</b> It is why short commitment horizons cause the policy to <em>stall</em> rather than
+  thrash — see <a href="v2-results.html">chapter 5</a>.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>1.2 &nbsp;How success is defined, exactly</h2>
+  <p style="color:var(--ink-2)">Reward is not shaped or hand-tuned — it is read off the physics
+  engine's contact list. At each step the simulator reports every pair of touching geometries, and
+  the task checks three booleans:</p>
+  <pre>touch_right_gripper = ("red_box", "vx300s_right/10_right_gripper_finger") in contacts
+touch_left_gripper  = ("red_box", "vx300s_left/10_left_gripper_finger")  in contacts
+touch_table         = ("red_box", "table")                                in contacts</pre>
+  <p style="color:var(--ink-2)">From which the stage follows:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Reward</th><th>Condition</th><th>In words</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td class="lead">&mdash;</td><td class="lead">still approaching</td></tr>
+      <tr><td>1</td><td class="lead">right gripper touching cube</td><td class="lead">contact made</td></tr>
+      <tr><td>2</td><td class="lead">right gripper touching, table <b>not</b> touching</td><td class="lead">lifted clear</td></tr>
+      <tr><td>3</td><td class="lead">left gripper touching cube</td><td class="lead">handover attempted</td></tr>
+      <tr class="hi"><td><b>4</b></td><td class="lead">left gripper touching, table <b>not</b> touching</td><td class="lead"><b>transfer complete — success</b></td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--ink-2)">An episode counts as a success if it ever reaches reward 4. The
+  environment terminates immediately when it does, which is why successful episodes are shorter
+  than failed ones (typically 230&ndash;320 steps against the full 400).</p>
+
+  <h3 style="margin-top:14px">When each stage happens — measured</h3>
+  <p style="color:var(--ink-2)">Timing the stages over five successful episodes gave a fact that
+  turned out to matter enormously:</p>
+  <pre>first contact with cube (reward &ge;1):   median step 154
+transfer complete       (reward  4):   median step 278</pre>
+  <p class="note warn">The original disturbance window in v2 was steps <b>40&ndash;160</b> — which
+  means nearly every disturbance fired <em>before the cube was even grasped</em>. Half the
+  perturbation suite was consequently measuring nothing. See <a href="bugs.html">chapter 6</a>.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>1.3 &nbsp;What varies between episodes</h2>
+  <p style="color:var(--ink-2)">Only one thing: <b>where the cube starts</b>. Both arms always
+  begin from the same home pose. The cube is sampled uniformly from a rectangle:</p>
+  <pre>x ~ Uniform(0.0, 0.2)      # 20 cm range
+y ~ Uniform(0.4, 0.6)      # 20 cm range
+z = 0.05                   # always on the table
+orientation = identity     # never rotated</pre>
+  <p style="color:var(--ink-2)">A 20&nbsp;&times;&nbsp;20&nbsp;cm spawn region, seeded per
+  episode. This is what makes one seed harder than another, and it is why <b>quoting a success
+  rate without saying which seeds</b> is meaningless — a fact that caused a genuine scare early in
+  this project, described in <a href="v2-method.html">chapter 4</a>.</p>
+  <p class="note">A 2 cm cube displacement — the calibrated <code>object_displace</code>
+  disturbance — is a tenth of the spawn range. Small, but enough to drop success by 23 points when
+  it lands during the grasp.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>1.4 &nbsp;The demonstration data</h2>
+  <div class="metrics">
+    <div class="metric"><span class="lab">episodes</span><span class="bignum">50</span></div>
+    <div class="metric"><span class="lab">frames</span><span class="bignum">20,000</span></div>
+    <div class="metric"><span class="lab">per episode</span><span class="bignum">400</span></div>
+    <div class="metric"><span class="lab">rate</span><span class="bignum">50 Hz</span></div>
+  </div>
+  <p style="color:var(--ink-2)"><code>lerobot/aloha_sim_transfer_cube_human</code> — 50 human
+  teleoperated demonstrations, 20,000 frames total. Each frame stores the overhead camera image,
+  the 14-d joint state, and the 14-d action the human commanded.</p>
+  <p style="color:var(--ink-2)"><b>Fifty demonstrations is not much.</b> That scarcity is exactly
+  the regime where compounding error bites hardest, and therefore where action chunking earns its
+  keep — which is the subject of <a href="background.html">chapter 2</a>.</p>
+  <p class="note">The word <b>human</b> in the dataset name matters. These are teleoperated by a
+  person, so they contain pauses, corrections and hesitation — the multimodality that makes
+  step-level behaviour cloning stall.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>1.5 &nbsp;The policy checkpoint used throughout</h2>
+  <p style="color:var(--ink-2)"><code>lerobot/act_aloha_sim_transfer_cube_human</code> — an ACT
+  policy trained on the dataset above for 80,000 steps. Rather than retrain, this project verified
+  the published checkpoint reproduces its reference evaluation <b>episode by episode</b>.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Check</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">Reference eval, 500 episodes</td><td>83.0%</td></tr>
+      <tr><td class="lead">Our rate, same seeds (n=50)</td><td>76.0%</td></tr>
+      <tr><td class="lead">Reference rate, same seeds (n=50)</td><td>76.0%</td></tr>
+      <tr class="hi"><td class="lead"><b>Per-episode agreement</b></td><td><b>48 / 50</b></td></tr>
+      <tr><td class="lead">Chunk prediction vs reference inference path</td><td>bitwise identical</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note good">This is a stronger check than "our number is close to their number". Two
+  different implementations can produce the same average while disagreeing everywhere. Agreeing on
+  <b>which specific episodes succeed</b> is much harder to achieve by accident.</p>
+</section>
+
+<div class="wrap pager"><a href="index.html">&larr; Contents</a><a href="background.html">Next: Action chunking &rarr;</a></div>
+</body></html>

@@ -3,9 +3,13 @@
 <title>FAACT — project notes</title><link rel="stylesheet" href="style.css"></head><body>
 <nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
 <a href="index.html" class="here">Contents</a>
-<a href="background.html" class="">1 &middot; Action chunking</a>
-<a href="v1.html" class="">2 &middot; FAACT v1</a>
-<a href="v2.html" class="">3 &middot; FAACT v2</a></div></nav>
+<a href="task.html" >1 &middot; The task</a>
+<a href="background.html" >2 &middot; Action chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" >4 &middot; v2 method</a>
+<a href="v2-results.html" >5 &middot; v2 results</a>
+<a href="bugs.html" >6 &middot; Bugs</a>
+<a href="glossary.html" >Glossary</a></div></nav>
 
 <div class="wrap stack" style="padding-top:56px">
   <p class="eyebrow">Personal notes &middot; ALOHA transfer-cube &middot; MuJoCo</p>
@@ -30,15 +34,28 @@
 <section class="wrap stack">
   <p class="eyebrow">Contents</p>
   <div class="toc">
-    <a href="background.html"><span class="n">01</span><span><span class="t">Action chunking, and why it works</span><br>
-      <span class="d">Compounding error in imitation learning, what a chunk is, how ACT is built
-      internally, and the reactivity it trades away.</span></span></a>
-    <a href="v1.html"><span class="n">02</span><span><span class="t">FAACT v1 — detect risk, pick a safer chunk</span><br>
-      <span class="d">Sample candidate chunks, score them with a learned failure predictor, execute
-      the safest. Measured 0/20. Why it failed, and the four root causes.</span></span></a>
-    <a href="v2.html"><span class="n">03</span><span><span class="t">FAACT v2 — reversibility and the horizon</span><br>
-      <span class="d">Measure recoverability by branch rollout, predict it, gate the commitment
-      horizon on it. Demos, results, and the cliff that explains the outcome.</span></span></a>
+    <a href="task.html"><span class="n">01</span><span><span class="t">The task, the robot, and the data</span><br>
+      <span class="d">ALOHA transfer-cube: two arms, a 20&times;20 cm cube spawn region, and success
+      defined by exact contact pairs. 50 human demonstrations, 400 steps at 50 Hz. Plus how the
+      policy checkpoint was verified against its reference evaluation.</span></span></a>
+    <a href="background.html"><span class="n">02</span><span><span class="t">Action chunking, and why it works</span><br>
+      <span class="d">Covariate shift and why cloning error grows like &epsilon;T&sup2;. How predicting
+      100 actions turns 400 decisions into 4. ACT's real architecture: 302 encoder tokens, 100
+      decoder queries, a CVAE that gets discarded at inference.</span></span></a>
+    <a href="v1.html"><span class="n">03</span><span><span class="t">FAACT v1 — detect risk, pick a safer chunk</span><br>
+      <span class="d">MC-dropout candidate sampling scored by a failure predictor. Measured 0/20.
+      Four root causes, including a disturbance flag that was never wired up.</span></span></a>
+    <a href="v2-method.html"><span class="n">04</span><span><span class="t">v2 — measuring reversibility</span><br>
+      <span class="d">The branch-rollout algorithm, and the four traps hiding inside "just snapshot
+      and replay": the 45-vs-262 number state problem, state living outside the simulator, why 8
+      branches are pointless without noise, and ruling out label noise at 0.977.</span></span></a>
+    <a href="v2-results.html"><span class="n">05</span><span><span class="t">v2 — results, and why it fails</span><br>
+      <span class="d">The cliff and the plateau. Why short horizons make the arm <em>stall</em>
+      rather than thrash. The six-controller comparison, McNemar, Bonferroni, and a power analysis
+      showing the design resolves 20-point gaps while the effects are 5&ndash;11.</span></span></a>
+    <a href="bugs.html"><span class="n">06</span><span><span class="t">Six bugs that produced believable numbers</span><br>
+      <span class="d">None of them crashed. Five were caught by checks that made the pipeline refuse
+      to proceed; one was caught by watching a video. The most transferable material here.</span></span></a>
     <a href="glossary.html"><span class="n">&mdash;</span><span><span class="t">Glossary &amp; reproduction</span><br>
       <span class="d">Every term defined, and the exact commands to regenerate each result.</span></span></a>
   </div>
@@ -64,5 +81,5 @@
   quantity it measures is reversibility, computed by replaying the simulator from a snapshot.</p>
 </section>
 
-<div class="wrap pager"><span></span><a href="background.html">Next: Action chunking &rarr;</a></div>
+<div class="wrap pager"><span></span><a href="task.html">Start: The task &rarr;</a></div>
 </body></html>

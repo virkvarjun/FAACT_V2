@@ -1,0 +1,189 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bugs — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html" >Contents</a>
+<a href="task.html" >1 &middot; The task</a>
+<a href="background.html" >2 &middot; Action chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" >4 &middot; v2 method</a>
+<a href="v2-results.html" >5 &middot; v2 results</a>
+<a href="bugs.html" class="here">6 &middot; Bugs</a>
+<a href="glossary.html" >Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">Chapter 6</p>
+  <h1>Six bugs that produced believable numbers</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">None of these crashed. Every one produced
+  plausible output while being wrong. This is the most transferable material in the whole project,
+  because the pattern generalises far beyond robotics.</p>
+</div>
+
+<section class="wrap stack">
+  <h2>The pattern</h2>
+  <div class="card stack-sm">
+    <p style="color:var(--ink-2)">In a pipeline that trains a model, runs a simulator, and reports
+    a statistic, <b>failures do not announce themselves.</b> A crash is a gift — you know
+    immediately. The dangerous failures are the ones where every stage completes, writes its
+    output, and reports a number that sits in a believable range.</p>
+    <p style="color:var(--ink-2)">Five of the six below were caught by checks written to make the
+    pipeline <b>refuse to proceed</b> — assertions, gates, guards. Exactly one was caught by a
+    human looking at the output and asking why it seemed odd.</p>
+    <p class="note warn"><b>Zero of them were caught by noticing a wrong result.</b> The results
+    all looked fine.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>1 &middot; The disturbance flag that did nothing</h2>
+  <div class="scroll"><table><tbody>
+    <tr><td class="lead"><b>Where</b></td><td class="lead">FAACT v1</td></tr>
+    <tr><td class="lead"><b>Symptom</b></td><td class="lead">0/20 baseline, 0 recoveries, in every run</td></tr>
+    <tr><td class="lead"><b>Cause</b></td><td class="lead"><code>--perturbation_mode</code> was parsed and stored, never used</td></tr>
+    <tr><td class="lead"><b>Caught by</b></td><td class="lead">post-mortem, after the project had concluded</td></tr>
+  </tbody></table></div>
+  <p style="color:var(--ink-2)">The entire premise of v1 was recovering from disturbances. No
+  disturbance was ever applied. The pipeline ran end to end, rendered videos, computed metrics and
+  produced a results table — all describing an experiment that had not been performed.</p>
+  <p class="note"><b>The fix, in v2:</b> every disturbance object records whether it fired, and the
+  episode runner <b>raises</b> if an episode completes without it firing. Two distinct exception
+  types separate "the episode ended before the disturbance was due" (legitimate, exclude and
+  count it) from "the episode ran past the onset and it still never fired" (a bug).</p>
+</section>
+
+<section class="wrap stack">
+  <h2>2 &middot; The solver cache that wasn't in the snapshot</h2>
+  <div class="scroll"><table><tbody>
+    <tr><td class="lead"><b>Where</b></td><td class="lead">v2 branch rollouts</td></tr>
+    <tr><td class="lead"><b>Symptom</b></td><td class="lead">two branches from an identical snapshot diverged by 2&times;10<sup>&minus;8</sup></td></tr>
+    <tr><td class="lead"><b>Cause</b></td><td class="lead"><code>physics.get_state()</code> omits MuJoCo's constraint-solver warm-start cache</td></tr>
+    <tr><td class="lead"><b>Caught by</b></td><td class="lead">a test asserting <em>bitwise</em> reproducibility</td></tr>
+  </tbody></table></div>
+  <p style="color:var(--ink-2)">MuJoCo's solver is iterative and warm-starts from the previous
+  step's solution. That cache is not among the 45 numbers dm_control returns. Restoring without it
+  means the solver begins from a different guess and produces a marginally different answer, which
+  compounds.</p>
+  <pre>physics.get_state()      45 numbers   &rarr; divergence within 150 steps
+mjSTATE_INTEGRATION     262 numbers   &rarr; bitwise identical</pre>
+  <p class="note"><b>Why the test had to demand bitwise equality.</b> A tolerance-based check
+  ("agree to 6 decimal places") would have passed. The divergence is tiny at first and grows, so
+  only an exact-equality assertion catches it at the point where it is still cheap to fix.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>3 &middot; The step counter that survived a restore</h2>
+  <div class="scroll"><table><tbody>
+    <tr><td class="lead"><b>Where</b></td><td class="lead">v2 branch rollouts</td></tr>
+    <tr><td class="lead"><b>Symptom</b></td><td class="lead">none — the numbers looked entirely reasonable</td></tr>
+    <tr><td class="lead"><b>Cause</b></td><td class="lead">the episode step counter lives in a gym wrapper, not in MuJoCo</td></tr>
+    <tr><td class="lead"><b>Caught by</b></td><td class="lead">a test asserting all branches get equal step budgets</td></tr>
+  </tbody></table></div>
+  <p style="color:var(--ink-2)">Restoring physics does not touch the <code>TimeLimit</code>
+  wrapper's counter. From a snapshot at step 120:</p>
+  <pre>branch 0:  ran 280 steps
+branch 1:  ran   1 step      &larr; counter already at the 400-step limit
+branch 2:  ran   1 step</pre>
+  <p style="color:var(--ink-2)">Every branch after the first was truncated immediately. R would
+  have silently become <b>(did branch 0 win?) / 8</b> — taking only the values 0 or 0.125, looking
+  exactly like a probability, and meaning nothing. Every downstream result would have inherited it.</p>
+  <p class="note warn"><b>The lesson that generalises:</b> when you snapshot "the state", enumerate
+  where state actually lives. Here it was split across a physics engine and a Python wrapper, and
+  only one of them was obvious.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>4 &middot; Disturbances aimed at the wrong phase of the task</h2>
+  <div class="scroll"><table><tbody>
+    <tr><td class="lead"><b>Where</b></td><td class="lead">v2 disturbance design</td></tr>
+    <tr><td class="lead"><b>Symptom</b></td><td class="lead"><code>grasp_slip</code> scored 65% at every duration — identical to undisturbed</td></tr>
+    <tr><td class="lead"><b>Cause</b></td><td class="lead">the onset window was steps 40&ndash;160; the cube is first grasped at step 154</td></tr>
+    <tr><td class="lead"><b>Caught by</b></td><td class="lead">a calibration sweep that measured each disturbance's actual effect</td></tr>
+  </tbody></table></div>
+  <p style="color:var(--ink-2)">Forcing a gripper open when it is not holding anything does
+  nothing at all. Roughly half the labelled dataset consisted of episodes whose disturbance had no
+  effect — effectively unperturbed episodes sitting in a dataset about recovering from
+  disturbances.</p>
+  <p style="color:var(--ink-2)">Fixing it required first <em>measuring the task's own timing</em>
+  (first contact at step 154, transfer complete at 278) and moving the window to 150&ndash;280.</p>
+  <div class="card stack-sm">
+    <h3>And a flaw in the check that was supposed to catch it</h3>
+    <p style="color:var(--ink-2)">The acceptance test asked only whether perturbed success landed
+    in a 25&ndash;65% band. With an undisturbed baseline of 65%, a disturbance that did
+    <b>nothing</b> scored 65% and passed — which <code>grasp_slip</code> did four times in a row,
+    printing "IN BAND" each time.</p>
+    <p class="note"><b>The gate now requires a drop of at least 15 points against the undisturbed
+    rate on the same seeds</b>, not merely an absolute range. An absolute band cannot distinguish
+    "correctly calibrated" from "does nothing" when the baseline sits at its edge.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>5 &middot; The directory flag that worker processes never saw</h2>
+  <div class="scroll"><table><tbody>
+    <tr><td class="lead"><b>Where</b></td><td class="lead">v2 parallel labelling</td></tr>
+    <tr><td class="lead"><b>Symptom</b></td><td class="lead">a directory reported 83 episodes when it should have held 80</td></tr>
+    <tr><td class="lead"><b>Cause</b></td><td class="lead"><code>--shard-dir</code> set a module-level global; <code>spawn</code> workers re-import the module and never see it</td></tr>
+    <tr><td class="lead"><b>Caught by</b></td><td class="lead">noticing an unexpected episode count while comparing two datasets</td></tr>
+  </tbody></table></div>
+  <p style="color:var(--ink-2)">A three-hour labelling run was writing its output into the
+  <em>previous</em> dataset's folder. Multiprocessing with the <code>spawn</code> start method
+  re-imports the module in each worker, so anything assigned to a global in <code>main()</code>
+  is invisible to them.</p>
+  <p class="note good"><b>What limited the damage:</b> an earlier fix had already put every
+  label-determining setting into the shard <em>filename</em> — stride, branch count, noise, onset
+  window, magnitude. So the two datasets did not collide by name and nothing was overwritten. They
+  were separable and were separated. Had the filename still been keyed on the episode seed alone,
+  the new labels would have silently overwritten the old ones.</p>
+  <p style="color:var(--ink-2)">The loader now <b>refuses</b> to open a directory containing more
+  than one labelling configuration, while still permitting the legitimate mixing of different
+  disturbance kinds.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>6 &middot; The mechanism that was assumed, not measured</h2>
+  <div class="scroll"><table><tbody>
+    <tr><td class="lead"><b>Where</b></td><td class="lead">the written explanation of the central result</td></tr>
+    <tr><td class="lead"><b>Symptom</b></td><td class="lead">none in the numbers — the numbers were right</td></tr>
+    <tr><td class="lead"><b>Cause</b></td><td class="lead">a plausible mechanism was asserted without checking it</td></tr>
+    <tr class="hi"><td class="lead"><b>Caught by</b></td><td class="lead"><b>a human watching the videos and asking why the arm wasn't moving</b></td></tr>
+  </tbody></table></div>
+  <p style="color:var(--ink-2)">The claim was that short horizons make ACT "tear itself apart":
+  because actions are absolute joint targets, each replan jumps to a different target and the
+  motion becomes jerky and self-destructive. It is a reasonable story. It is also wrong.</p>
+  <pre>MEASURED — net joint displacement over an episode:
+  h=5     0.16      the arm barely leaves its start pose
+  h=100   2.02</pre>
+  <p style="color:var(--ink-2)">The arm does not thrash. It <b>stalls</b>. An ACT chunk begins at
+  the current pose, so committing only its first few actions and replanning from a barely-changed
+  state re-emits a near-identical chunk. The robot creeps forward at a fraction of speed and runs
+  out of time.</p>
+  <p class="note warn"><b>Why no automated check caught this.</b> Every number was correct — h=5
+  really does score 0/40, replicated on two independent seed sets. Only the <em>explanation</em>
+  was wrong, and no test asserts that a written explanation matches reality. The rollout videos
+  existed, but had been generated late and not watched carefully.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>What to take from all six</h2>
+  <ul>
+    <li><b>A flag that does nothing looks exactly like a flag that works.</b> Anything that is
+    supposed to have an effect should be asserted to have had one.</li>
+    <li><b>Enumerate where state actually lives</b> before writing a snapshot function. Physics
+    engine, wrappers, RNGs, counters — all of it.</li>
+    <li><b>Demand exact equality where exactness is achievable.</b> A tolerance would have hidden
+    bug 2 until it was expensive.</li>
+    <li><b>An acceptance band on the wrong quantity passes trivially.</b> Bug 4's check compared an
+    absolute rate when it needed to compare a <em>difference</em>.</li>
+    <li><b>Put every setting that changes an output into that output's filename.</b> It converted
+    bug 5 from silent corruption into a recoverable mistake.</li>
+    <li><b>Watch the raw output.</b> The one bug no check caught was caught by looking at a video.
+    Aggregate statistics cannot tell you the arm never moved.</li>
+  </ul>
+  <p class="note good">Four separate conclusions in this project also reversed under better tests:
+  that a more accurate estimator would help, that calibration would help, that the oracle beat the
+  baseline, and that success was monotone in horizon. <b>Being wrong repeatedly and finding out is
+  the process working</b>, provided the finding-out is built in.</p>
+</section>
+
+<div class="wrap pager"><a href="v2-results.html">&larr; v2 results</a><a href="glossary.html">Next: Glossary &rarr;</a></div>
+</body></html>

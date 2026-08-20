@@ -1,0 +1,250 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>v2 results — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html" >Contents</a>
+<a href="task.html" >1 &middot; The task</a>
+<a href="background.html" >2 &middot; Action chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" >4 &middot; v2 method</a>
+<a href="v2-results.html" class="here">5 &middot; v2 results</a>
+<a href="bugs.html" >6 &middot; Bugs</a>
+<a href="glossary.html" >Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">Chapter 5</p>
+  <h1>v2 — results, and why it fails</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">Reversibility turned out to be measurable and
+  predictable. Gating the commitment horizon on it gained nothing. The reason is a cliff, and the
+  cliff is a stall.</p>
+</div>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>5.1 &nbsp;The result you can watch</h2>
+    <p style="color:var(--ink-2)">Same seed, same disturbance, same policy. The only difference is
+    how many steps of each predicted chunk the robot commits to before replanning — 5 on the left,
+    40 on the right.</p>
+  </div>
+  <figure class="vid">
+    <video controls autoplay muted loop playsinline preload="metadata"
+      src="videos/cliff_seed9203_actuation_noise.mp4"></video>
+    <figcaption><b>The left arm barely moves.</b> This is not jerky over-correction — it is a
+    stall, and it was the single most surprising finding in the project.</figcaption>
+  </figure>
+  <div class="wrap stack-sm">
+    <div class="card stack-sm">
+      <h3>Why short horizons stall</h3>
+      <p style="color:var(--ink-2)">An ACT chunk is a trajectory <em>starting from where the robot
+      is now</em>, and the actions are <b>absolute joint positions</b>
+      (<a href="task.html">chapter 1</a>). The first few entries of any chunk are therefore close
+      to the current pose — the trajectory has barely departed yet.</p>
+      <p style="color:var(--ink-2)">Commit only the first 5 of them and the robot moves a tiny
+      amount. Replan, and the policy sees a state almost identical to the one it just saw, so it
+      emits an almost identical chunk. Take its first 5 actions again. The loop advances at a
+      fraction of normal speed and the episode times out.</p>
+      <pre>MEASURED — net joint displacement over a full episode:
+
+  h=5    0.16      per-seed: 0.15  0.17  0.16  0.17  0.16   &larr; stalls every time
+  h=10   1.03      per-seed: 2.03  0.16  0.16  1.57  1.21   &larr; bimodal, right at the edge
+  h=20   1.95      per-seed: 2.05  2.07  2.03  1.53  2.09
+  h=100  2.02      per-seed: 2.02  2.04  1.93  2.05  2.03</pre>
+      <p style="color:var(--ink-2)">h=5 stalls on every seed tested. h=10 stalls on some and not
+      others. h&ge;20 always moves. That maps precisely onto the success curve below.</p>
+      <p class="note warn"><b>This corrects an earlier belief.</b> The intuitive story — "frequent
+      replanning makes the motion jerky and it tears itself apart" — is wrong. Total joint path is
+      in fact slightly <em>higher</em> at h=10 than h=100 (6.53 vs 5.37), so there is some extra
+      jitter, but at h=5 the dominant effect is stalling. Nobody noticed until the rollout videos
+      were actually watched.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>5.2 &nbsp;The horizon sweep: a cliff and a plateau</h2>
+    <p style="color:var(--ink-2)">Seven fixed horizons, same 37 episodes, identical disturbances.
+    This is the measurement that explains every other result on this page.</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Horizon</th><th>Success (n=37)</th><th>vs h=40</th><th>What is happening</th></tr></thead>
+    <tbody>
+      <tr><td>5</td><td>0/37 &nbsp;&nbsp;0%</td><td class="sig">p = 0.00001</td><td class="lead">arm stalls completely</td></tr>
+      <tr><td>10</td><td>1/37 &nbsp;&nbsp;3%</td><td class="sig">p = 0.00002</td><td class="lead">stalls on most seeds</td></tr>
+      <tr><td>20</td><td>11/37 &nbsp;30%</td><td class="ns">p = 0.092</td><td class="lead">moves normally</td></tr>
+      <tr class="hi"><td>40</td><td><b>18/37 &nbsp;49%</b></td><td class="ns">&mdash;</td><td class="lead">nominal best</td></tr>
+      <tr><td>60</td><td>14/37 &nbsp;38%</td><td class="ns">p = 0.219</td><td class="lead">indistinguishable from 40</td></tr>
+      <tr><td>80</td><td>15/37 &nbsp;41%</td><td class="ns">p = 0.508</td><td class="lead">indistinguishable</td></tr>
+      <tr><td>100</td><td>13/37 &nbsp;35%</td><td class="ns">p = 0.125</td><td class="lead">indistinguishable</td></tr>
+    </tbody>
+  </table></div>
+  <div class="wrap stack-sm">
+    <pre>Spearman(horizon, success), all 7 points:   +0.68
+Spearman(horizon, success), h &ge; 20 only:    +0.10    &larr; essentially flat</pre>
+    <p class="note"><b>Below ~20 steps: catastrophe. Above ~20 steps: nothing.</b> The cliff
+    comparisons are the only results in this entire project that survive correction for multiple
+    testing (p = 10<sup>&minus;5</sup>). Every comparison within the plateau is
+    p &ge; 0.09.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>5.3 &nbsp;Why that kills the method</h2>
+  <div class="card stack-sm">
+    <p style="color:var(--ink-2)">Every gated controller built in this project — learned and
+    oracle alike — operated at a <b>mean horizon between 41 and 56</b>. That is squarely inside
+    the plateau.</p>
+    <p style="font-size:1.1rem"><b>A controller can only lose by approaching the cliff, and cannot
+    gain by moving around within the flat.</b></p>
+    <p style="color:var(--ink-2)">This holds regardless of what the horizon is gated on — perfect
+    information included. Which is precisely why an oracle handed ground-truth reversibility
+    performs no better than committing blindly to 100 steps. The signal is fine. The
+    <em>actuator</em> has no authority in the region where any sensible controller operates.</p>
+  </div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>5.4 &nbsp;The full controller comparison</h2>
+    <p style="color:var(--ink-2)">All six conditions on the same 76 episodes with identical
+    disturbances. The learned rows are scored by a model from the cross-validation fold that never
+    trained on that episode, making them directly comparable to the oracle.</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Controller</th><th>Success</th><th>Replans/ep</th><th>Mean h</th><th>False alarm</th><th>vs fixed h=100</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td class="lead"><b>fixed h=100 — as published</b></td><td><b>36/76 &nbsp;47%</b></td><td>3.6</td><td>100</td><td>0%</td><td class="ns">&mdash;</td></tr>
+      <tr><td class="lead">learned gating, &gamma;=1</td><td>35/76 &nbsp;46%</td><td>7.6</td><td>50</td><td>11%</td><td class="ns">p = 1.000</td></tr>
+      <tr><td class="lead">oracle R, &gamma;=1</td><td>30/76 &nbsp;39%</td><td>8.8</td><td>43</td><td>3%</td><td class="ns">p = 0.109</td></tr>
+      <tr><td class="lead">oracle R, &gamma;=2</td><td>30/76 &nbsp;39%</td><td>9.2</td><td>41</td><td>10%</td><td class="ns">p = 0.109</td></tr>
+      <tr><td class="lead">learned gating, &gamma;=2</td><td>30/76 &nbsp;39%</td><td>9.3</td><td>41</td><td>23%</td><td class="ns">p = 0.238</td></tr>
+      <tr><td class="lead">fixed h=20</td><td>25/76 &nbsp;33%</td><td>19.3</td><td>20</td><td>0%</td><td class="ns">p = 0.061</td></tr>
+    </tbody>
+  </table></div>
+  <div class="wrap"><p class="note">Not one comparison reaches significance. The learned
+  controller against the published baseline is <span class="num">p = 1.000</span> — eight episodes
+  won, nine lost, a dead heat.</p></div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>5.5 &nbsp;The method, filmed</h2>
+  </div>
+  <figure class="vid">
+    <video controls autoplay muted loop playsinline preload="metadata"
+      src="videos/gated_seed8500_object_displace.mp4"></video>
+    <figcaption>Left commits 100 steps every time. Right varies from 20 to 100 based on predicted
+    reversibility. The cube is teleported 2&nbsp;cm mid-grasp; the gated controller correctly
+    detects the reversibility drop, shortens its commitment, and <b>still fails</b> — while the
+    policy that simply committed and carried on succeeds. Clips are chosen from pairs where the two
+    controllers <em>disagreed</em>, so they illustrate the failure mode rather than the average
+    case.</figcaption>
+  </figure>
+</section>
+
+<section class="wrap stack">
+  <h2>5.6 &nbsp;How the comparisons were tested</h2>
+  <div class="card stack-sm">
+    <h3>McNemar, because the conditions are paired</h3>
+    <p style="color:var(--ink-2)">Every condition runs the <em>same</em> episodes with the
+    <em>same</em> disturbances. Treating 36/76 vs 30/76 as two independent proportions throws that
+    pairing away and loses power. McNemar's test looks only at episodes where the two
+    <b>disagreed</b>:</p>
+    <pre>x = episodes A won and B lost
+y = episodes B won and A lost
+episodes where both agreed are discarded — they carry no information
+
+under the null:   x ~ Binomial(x + y, 0.5)</pre>
+    <p style="color:var(--ink-2)">So "2 vs 12, p=0.013" means: of the 14 episodes where they
+    differed, one condition won 12.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>Why nothing survives correction</h3>
+    <p style="color:var(--ink-2)">Six controllers give <span class="num">15</span> pairwise
+    comparisons. At &alpha;=0.05, running 15 tests yields an expected 0.75 false positives even if
+    every condition were identical. Bonferroni demands
+    <span class="num">p &lt; 0.05/15 = 0.0033</span>.</p>
+    <p style="color:var(--ink-2)">Only the cliff results clear that. Every reversibility-related
+    result sits between 0.013 and 1.000 and does <b>not</b>.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>The design is underpowered, and by how much</h3>
+    <div class="scroll"><table>
+      <thead><tr><th>True gap</th><th>Episodes needed per condition</th><th>We ran</th></tr></thead>
+      <tbody>
+        <tr><td>5 points</td><td>~1250</td><td class="ns">37&ndash;79</td></tr>
+        <tr><td>10 points</td><td>~308</td><td class="ns">37&ndash;79</td></tr>
+        <tr><td>15 points</td><td>~133</td><td class="ns">37&ndash;79</td></tr>
+        <tr><td>20 points</td><td>~72</td><td class="sig">borderline</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note warn"><b>"Not significant" here means "underpowered", not "no effect".</b> The
+    design resolves gaps of roughly 20 points; the differences in play are 5&ndash;11. That cuts
+    both ways — it is equally not evidence <em>for</em> the method.</p>
+  </div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>5.7 &nbsp;Two regimes, opposite answers</h2>
+    <p style="color:var(--ink-2)">One result briefly looked like success. Understanding why it
+    reversed is more instructive than either number alone.</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th></th><th>Regime A</th><th>Regime B</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">Disturbance window</td><td>steps 40&ndash;160</td><td>steps 150&ndash;280</td></tr>
+      <tr><td class="lead">Cube first grasped at</td><td colspan="2">median step <b>154</b></td></tr>
+      <tr><td class="lead">So disturbances landed</td><td><b>before</b> the grasp</td><td>during the grasp</td></tr>
+      <tr><td class="lead">Kinds used</td><td>all 4 (2 are no-ops)</td><td>only the 2 effective ones</td></tr>
+      <tr><td class="lead">Post-onset states already unrecoverable</td><td>39%</td><td>75%</td></tr>
+      <tr class="hi"><td class="lead"><b>oracle vs fixed h=100</b></td><td><b>77% vs 65%</b> (p=0.013)</td><td><b>39% vs 47%</b> (p=0.109)</td></tr>
+      <tr><td class="lead">&rho;(horizon, success)</td><td>&minus;0.03</td><td>+0.94</td></tr>
+    </tbody>
+  </table></div>
+  <div class="wrap stack-sm">
+    <p style="color:var(--ink-2)">In regime A the disturbances hit while the robot was still
+    reaching through free space — recoverable, and there a controller that shortened selectively
+    could help. In regime B they hit during manipulation, where three quarters of disturbed states
+    are already lost. Once a state is unrecoverable no horizon policy can save it, so the
+    intervention has nothing to act on and only its cost remains.</p>
+    <p class="note warn"><b>A calibration warning that generalises.</b> Both regimes sit inside the
+    25&ndash;65% perturbed-success band normally used to tune disturbance strength, and they behave
+    oppositely. <b>Calibrating disturbances by success rate does not guarantee a useful
+    distribution of recoverable states</b> — the band belongs on the fraction of states that are
+    still saveable.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>5.8 &nbsp;Conclusion</h2>
+  <div class="card stack-sm">
+    <p style="font-size:1.15rem"><b>Reversibility is measurable, predictable, and useless as a
+    horizon controller on this task.</b></p>
+    <p style="color:var(--ink-2)">Right signal, wrong actuator. Three separate lines of evidence
+    say the estimate was never the bottleneck: accuracy improved 0.479 &rarr; 0.660 &rarr; 0.693
+    across three datasets with control performance unmoved; calibrating the estimate made things
+    37% worse; and an oracle with perfect information gains nothing either.</p>
+    <p style="color:var(--ink-2)">If low reversibility should trigger anything, it is not
+    "replan more often". It would have to be a genuinely different recovery behaviour — which is
+    what the cut LoRA-adapter idea was for, and remains the obvious next thing to try.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>5.9 &nbsp;Limits</h2>
+  <ul>
+    <li><b>One task, one policy, one simulator.</b> Whether the plateau exists for other chunked
+    policies, or for tasks with different time constants, is untested.</li>
+    <li><b>Underpowered.</b> Outside the cliff, nothing survives multiple-comparison correction.</li>
+    <li><b>Two of four disturbance kinds do not work here</b>, so the suite is honestly two kinds.</li>
+    <li><b>The oracle is a ceiling, not an achievable result</b> — it reads labels measured on the
+    very episodes it runs.</li>
+    <li><b>No error bars across seeds.</b> Single seed set per run, as the plan specified.</li>
+    <li><b>The GPU path is untested.</b> Everything ran on laptop CPU; the code is device-agnostic
+    but CUDA was never exercised.</li>
+  </ul>
+</section>
+
+<div class="wrap pager"><a href="v2-method.html">&larr; v2 method</a><a href="bugs.html">Next: Bugs &rarr;</a></div>
+</body></html>

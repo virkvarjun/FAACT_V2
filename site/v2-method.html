@@ -1,0 +1,254 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>v2 method — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html" >Contents</a>
+<a href="task.html" >1 &middot; The task</a>
+<a href="background.html" >2 &middot; Action chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" class="here">4 &middot; v2 method</a>
+<a href="v2-results.html" >5 &middot; v2 results</a>
+<a href="bugs.html" >6 &middot; Bugs</a>
+<a href="glossary.html" >Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">Chapter 4</p>
+  <h1>v2 — measuring reversibility</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">What reversibility is, how it is measured
+  rather than estimated, the four traps that had to be solved before the measurement meant
+  anything, and how a model is trained to predict it.</p>
+</div>
+
+<section class="wrap stack">
+  <h2>4.1 &nbsp;The reframe</h2>
+  <p style="color:var(--ink-2)"><a href="v1.html">v1</a> asked <em>"will this fail?"</em> and
+  answered by swapping the action. Both halves were wrong: the target measured proximity to
+  termination, and the candidate actions could not recover.</p>
+  <p style="color:var(--ink-2)">v2 changes both. The question becomes <em>"can I still come back
+  from here?"</em>, and the response becomes <b>how long to commit</b> rather than <em>what to
+  do</em>.</p>
+  <div class="card stack-sm">
+    <h3>Reversibility, defined so it can be measured</h3>
+    <p style="color:var(--ink-2)"><b>R(s)</b> = the probability the task still succeeds if the
+    policy stops and replans from state <span class="num">s</span> right now.</p>
+    <p class="num" style="color:var(--ink-2);font-size:.95rem">h = clip(h_min, 100, 100 &times; R&#770;<sup>&gamma;</sup>)</p>
+    <p style="color:var(--ink-2)">High R &rarr; a mistake is still fixable &rarr; commit long and
+    keep the smooth motion. Low R &rarr; the point of no return is close &rarr; commit short and
+    stay reactive. &gamma; controls how sharply the controller becomes cautious as R falls.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>Why this is not uncertainty, and not entropy</h3>
+    <p style="color:var(--ink-2)">A common instinct is to gate on the policy's uncertainty. That
+    is a different question with a different answer.</p>
+    <ul>
+      <li><b>Uncertainty / entropy</b> asks: <em>does the policy know what to do?</em></li>
+      <li><b>Reversibility</b> asks: <em>does it still matter?</em></li>
+    </ul>
+    <p style="color:var(--ink-2)">These come apart in both directions. A robot that has knocked
+    the cube off the table may be completely confident about its next action and completely
+    doomed — low entropy, zero reversibility. A robot pausing at a genuine fork may be maximally
+    uncertain and perfectly fine either way — high entropy, high reversibility.</p>
+    <p class="note warn"><b>There is no entropy term anywhere in this project.</b> Reversibility
+    is computed by replaying the simulator, not by inspecting the policy's output distribution.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>4.2 &nbsp;The branch-rollout algorithm</h2>
+  <p style="color:var(--ink-2)">This is the core primitive and it is deliberately <em>not</em> a
+  model. The simulator is asked the question directly by being replayed:</p>
+  <pre>for each perturbed episode:
+    for t in 0, 25, 50, ..., 375:          # every 25th step
+        s = snapshot(simulator)             # full state — see the traps below
+        wins = 0
+        for m in 1..8:                      # 8 independent branches
+            restore(simulator, s)
+            wins += rollout_to_end(policy, replanning from scratch)
+        R[t] = wins / 8
+        record(features_at_t, R[t])
+    restore(simulator, s)                   # leave the episode as we found it</pre>
+
+  <h3 style="margin-top:14px">Cost, and the one optimisation that makes it feasible</h3>
+  <p style="color:var(--ink-2)">Naively this is enormous: 80 episodes &times; 16 label points
+  &times; 8 branches &times; ~250 steps &asymp; <b>2.6 million simulator steps</b>. The trick is
+  that branches run <em>open-loop at h=100</em>, so a 250-step branch costs about 3 policy forward
+  passes rather than 250.</p>
+  <pre>MuJoCo:        ~84 steps/second
+ACT forward:   ~76 ms
+
+250-step branch  =  2.96 s of simulation  +  0.23 s of policy</pre>
+  <p class="note"><b>The simulator is the bottleneck by roughly 13&times;.</b> This is why the
+  entire project ran on a laptop CPU: a GPU would accelerate the 0.23 s and leave the 2.96 s
+  untouched. What matters is performance-core count, not an accelerator.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>4.3 &nbsp;Four traps in "just snapshot and replay"</h2>
+  <p style="color:var(--ink-2)">The algorithm above is four lines of pseudocode and every one of
+  them hides a way to produce numbers that look like probabilities and are not.</p>
+
+  <div class="card stack-sm">
+    <h3>Trap 1 &middot; What "snapshot the simulator" must include</h3>
+    <p style="color:var(--ink-2)">The obvious call is dm_control's <code>physics.get_state()</code>
+    — 45 numbers covering joint positions, velocities and actuator state. <b>It is not
+    enough.</b></p>
+    <p style="color:var(--ink-2)">MuJoCo's constraint solver is iterative, and it starts each step
+    from the previous step's solution — a <b>warm-start cache</b>. That cache is not in the 45
+    numbers. Restore without it and the solver begins from a different initial guess, producing a
+    slightly different answer.</p>
+    <pre>physics.get_state()        45 numbers   &rarr; branches diverge by 2e-8 within 150 steps
+mjSTATE_INTEGRATION       262 numbers   &rarr; branches bitwise identical</pre>
+    <p style="color:var(--ink-2)">Two branches from an identical snapshot must be
+    <em>bitwise</em> identical when driven by identical actions, and a test asserts exactly that.
+    Approximate agreement is not good enough: the divergence compounds, and every label would
+    inherit the error.</p>
+  </div>
+
+  <div class="card stack-sm">
+    <h3>Trap 2 &middot; State that lives outside the simulator</h3>
+    <p style="color:var(--ink-2)">The episode step counter is not in MuJoCo at all — it lives in a
+    gym <code>TimeLimit</code> wrapper. Restoring physics leaves it running. Measured from a
+    snapshot taken at step 120:</p>
+    <pre>branch 0:  ran 280 steps
+branch 1:  ran   1 step     &larr; counter already at the 400 limit
+branch 2:  ran   1 step</pre>
+    <p style="color:var(--ink-2)">Every branch after the first was truncated immediately. R would
+    have silently collapsed to <b>(did branch 0 win?) / 8</b> — which can only take the values 0
+    or 0.125, looks like a probability, and is not one. <b>Nothing raised an error.</b></p>
+    <p style="color:var(--ink-2)">The snapshot now carries the counter alongside the physics
+    state, and a test asserts every branch receives an equal step budget.</p>
+  </div>
+
+  <div class="card stack-sm">
+    <h3>Trap 3 &middot; A deterministic policy makes 8 branches pointless</h3>
+    <p style="color:var(--ink-2)">Having made restore bitwise exact, a new problem appears. ACT is
+    deterministic at inference (<a href="background.html">chapter 2</a>: the CVAE latent is
+    zeroed). So all 8 branches replay <em>identically</em> and R can only ever be 0 or 1 — a
+    "probability" welded to one side, and 8&times; the compute for no information.</p>
+    <p style="color:var(--ink-2)">Each branch therefore adds small Gaussian noise to its actions,
+    seeded per branch. R becomes the success probability under the policy's own execution
+    variability — which is closer to what a controller actually needs to know.</p>
+    <p style="color:var(--ink-2)">The noise scale is a real trade-off: large enough to spread
+    outcomes, small enough not to change what the policy can do. Measured on 20 unperturbed
+    episodes:</p>
+    <pre>noise 0.0    &rarr; 13/20 = 65%    identical to baseline — confirms the rollout path is faithful
+noise 0.01   &rarr; 13/20 = 65%    &larr; chosen
+noise 0.02   &rarr;  8/20 = 40%    already destructive; would bias every label downward
+noise 0.05   &rarr;  0/20 =  0%    completely breaks the policy</pre>
+    <p class="note">Note the 0.0 row does double duty: matching the baseline exactly proves the
+    branch-rollout code path executes the policy the same way normal evaluation does.</p>
+  </div>
+
+  <div class="card stack-sm">
+    <h3>Trap 4 &middot; Ruling out measurement noise before blaming the model</h3>
+    <p style="color:var(--ink-2)">R is estimated from only 8 branches, so it carries binomial
+    error. If a model then predicts R only moderately well, is that the model's fault or the
+    label's?</p>
+    <p style="color:var(--ink-2)">Answering it requires no new experiments: treat each measured R
+    as the true probability, draw two <em>independent</em> re-measurements of 8 branches each, and
+    see how well they agree with each other. That is the ceiling any predictor could reach.</p>
+    <pre>test-retest reliability at M=8:   0.977
+our model:                        0.693     &rarr; 71% of the achievable ceiling
+ceiling if M=16:                  0.992
+ceiling if M=32:                  0.999</pre>
+    <p style="color:var(--ink-2)">The reliability is so high because 86% of R values sit at exactly
+    0 or 1, where re-measurement is nearly deterministic. <b>Label noise was not the limit</b>, so
+    raising the branch count would have bought essentially nothing.</p>
+    <p class="note good">This single check redirected effort from "run more branches" to "label
+    more episodes" — and doubling episodes is what actually moved the model from 0.479 to 0.693.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>4.4 &nbsp;Building disturbances that provably do something</h2>
+  <p style="color:var(--ink-2)">v1's fatal bug was a disturbance flag that did nothing. v2
+  implements four kinds, each hooking the episode loop at a different point:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Kind</th><th>Hook</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">object_displace</td><td>physics</td><td class="lead">teleports the cube 2 cm in a random planar direction</td></tr>
+      <tr><td class="lead">grasp_slip</td><td>action</td><td class="lead">forces both grippers fully open for N steps</td></tr>
+      <tr><td class="lead">actuation_noise</td><td>action</td><td class="lead">adds Gaussian noise to joint commands over a 20-step window</td></tr>
+      <tr><td class="lead">occlusion</td><td>observation</td><td class="lead">blacks out a rectangular patch of the camera image</td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--ink-2)">The hook <em>order</em> within a step is deliberate and was a
+  source of subtle error:</p>
+  <pre>1. apply physics disturbance    (teleport the cube)
+2. RE-OBSERVE                   &larr; so the policy sees the moved cube
+3. apply observation disturbance (occlusion)
+4. policy acts
+5. apply action disturbance      (slip, noise)
+6. step the simulator</pre>
+  <p class="note warn">Getting steps 1 and 2 backwards would teleport the cube and then let the
+  policy act on an image of where it <em>used to be</em> — a disturbance the policy cannot even
+  perceive, and one that would look like a much stronger effect than it is.</p>
+
+  <h3 style="margin-top:14px">Two of the four do not work</h3>
+  <p style="color:var(--ink-2)">The acceptance test requires both a success rate inside
+  25&ndash;65% <em>and</em> a drop of at least 15 points versus undisturbed. Measured against a
+  65% baseline:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Kind</th><th>Best setting</th><th>Success</th><th>Drop</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">object_displace</td><td>2 cm</td><td>42%</td><td>&minus;23</td><td><span class="chip pass">works</span></td></tr>
+      <tr><td class="lead">actuation_noise</td><td>&sigma;=0.05</td><td>37%</td><td>&minus;28</td><td><span class="chip pass">works</span></td></tr>
+      <tr><td class="lead">grasp_slip</td><td>any duration</td><td>53%</td><td>&minus;12</td><td><span class="chip fail">too weak</span></td></tr>
+      <tr><td class="lead">occlusion</td><td><b>90% of the image</b></td><td>53%</td><td>&minus;12</td><td><span class="chip fail">too weak</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="note"><b>Blacking out 90% of the only camera costs this policy 12 points.</b> That is
+  a finding in its own right: ACT is running almost entirely on proprioception for this task, and
+  a visual disturbance cannot meaningfully perturb it.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>4.5 &nbsp;Predicting R from the policy's own features</h2>
+  <p style="color:var(--ink-2)">With labels in hand, a small MLP is trained to predict R from
+  features extracted out of ACT by forward hooks — no fork of the policy required.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Feature group</th><th>Dim</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">feat_encoder_mean</td><td>512</td><td class="lead">transformer encoder output, mean-pooled over its 302 tokens</td></tr>
+      <tr><td class="lead">feat_decoder_mean</td><td>512</td><td class="lead">decoder output, mean-pooled over its 100 queries</td></tr>
+      <tr><td class="lead">feat_action_prefix_flat_10</td><td>140</td><td class="lead">the first 10 actions of the chunk, flattened</td></tr>
+      <tr><td class="lead">feat_state</td><td>14</td><td class="lead">current joint positions</td></tr>
+      <tr><td class="lead">feat_action_first</td><td>14</td><td class="lead">the very next action</td></tr>
+      <tr><td class="lead">feat_action_prefix_mean_10</td><td>14</td><td class="lead">mean of the first 10 actions</td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--ink-2)">Total 1206 dimensions. The head is
+  <span class="num">input &rarr; 256 &rarr; 128 &rarr; 1</span> with a sigmoid output, trained with
+  soft-target binary cross-entropy against R &isin; [0,1].</p>
+  <div class="card stack-sm">
+    <h3>Why the hooks assert they fired</h3>
+    <p style="color:var(--ink-2)">A forward hook that silently produces nothing yields a vector of
+    zeros. Train on that and the model learns to predict the mean — which looks like "these
+    features just aren't informative" rather than like a bug. The wrapper therefore
+    <b>raises</b> if a hook did not fire, and tests assert the captured vectors are non-zero,
+    non-constant, and change when the observation changes.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>Splitting by episode, never within one</h3>
+    <p style="color:var(--ink-2)">States 25 steps apart in the same episode share a seed, a
+    disturbance, and often the same action chunk. They are near-duplicates. A random split over
+    <em>states</em> would put near-copies of the test set into training, inflating the score and
+    producing a model that looks calibrated and is useless.</p>
+    <p style="color:var(--ink-2)">All splits are therefore by <b>episode</b>. Evaluation uses
+    5-fold cross-validation where every episode is held out exactly once, and predictions are
+    pooled across folds so the reported number uses all 1,000 states rather than one arbitrary
+    fifth of them.</p>
+    <p class="note warn">A single 24/8/8 split was tried first and abandoned: it selected one
+    feature set on validation at &rho;=0.509 which then scored 0.265 on test — a 0.24 swing on the
+    same model, purely from an 8-episode test set.</p>
+  </div>
+  <div class="metrics" style="margin-top:6px">
+    <div class="metric"><span class="lab">labelled states</span><span class="bignum">1,990</span></div>
+    <div class="metric"><span class="lab">R before disturbance</span><span class="bignum">0.78</span></div>
+    <div class="metric"><span class="lab">R after</span><span class="bignum bad">0.24</span></div>
+    <div class="metric"><span class="lab">model accuracy</span><span class="bignum">&rho; 0.69</span></div>
+  </div>
+</section>
+
+<div class="wrap pager"><a href="v1.html">&larr; FAACT v1</a><a href="v2-results.html">Next: v2 results &rarr;</a></div>
+</body></html>
