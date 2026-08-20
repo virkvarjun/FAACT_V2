@@ -3,12 +3,14 @@
 <title>v2 method — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
 <nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
 <a href="index.html" >Contents</a>
-<a href="task.html" >1 &middot; The task</a>
-<a href="background.html" >2 &middot; Action chunking</a>
+<a href="walkthrough.html" >Walkthrough</a>
+<a href="task.html" >1 &middot; Task</a>
+<a href="background.html" >2 &middot; Chunking</a>
 <a href="v1.html" >3 &middot; v1</a>
 <a href="v2-method.html" class="here">4 &middot; v2 method</a>
 <a href="v2-results.html" >5 &middot; v2 results</a>
 <a href="bugs.html" >6 &middot; Bugs</a>
+<a href="design.html" >7 &middot; Design choices</a>
 <a href="glossary.html" >Glossary</a></div></nav>
 
 <div class="wrap stack" style="padding-top:52px">
@@ -200,6 +202,17 @@ ceiling if M=32:                  0.999</pre>
   <p class="note"><b>Blacking out 90% of the only camera costs this policy 12 points.</b> That is
   a finding in its own right: ACT is running almost entirely on proprioception for this task, and
   a visual disturbance cannot meaningfully perturb it.</p>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm"><h3>What a gated episode looks like</h3></div>
+  <figure class="vid">
+    <video controls autoplay muted loop playsinline preload="metadata"
+      src="videos/gated_seed8500_object_displace.mp4"></video>
+    <figcaption>Left commits a full 100 steps. Right varies its commitment between 20 and 100 based
+    on predicted reversibility. The cube is teleported 2&nbsp;cm mid-grasp &mdash; the
+    <code>object_displace</code> disturbance described in 4.4.</figcaption>
+  </figure>
 </section>
 
 <section class="wrap stack">

@@ -1,0 +1,168 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Design choices — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html" >Contents</a>
+<a href="walkthrough.html" >Walkthrough</a>
+<a href="task.html" >1 &middot; Task</a>
+<a href="background.html" >2 &middot; Chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" >4 &middot; v2 method</a>
+<a href="v2-results.html" >5 &middot; v2 results</a>
+<a href="bugs.html" >6 &middot; Bugs</a>
+<a href="design.html" class="here">7 &middot; Design choices</a>
+<a href="glossary.html" >Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">Chapter 7</p>
+  <h1>Every design choice, and why</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">A research codebase is a pile of decisions.
+  Most are invisible in the results and decide whether the results mean anything. This is the
+  complete list, grouped by area, with what each one prevents.</p>
+  <p class="note">Where a choice was <b>changed</b> during the project, both the original and the
+  replacement are shown — the change is usually the interesting part.</p>
+</div>
+
+<section class="wrap stack">
+  <h2>7.1 &nbsp;Setup and infrastructure</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr><td class="lead"><b>Use the published checkpoint, verify it per-seed</b><br>rather than retraining</td><td class="lead">The reference repo ships per-episode results for 500 evaluation episodes. Comparing episode by episode is a far stronger check than comparing averages.</td><td class="lead">Six hours of training on the critical path, and the possibility of a subtly wrong policy that scores plausibly</td></tr>
+      <tr><td class="lead"><b>lerobot as a pinned pip dependency</b><br>not a git submodule</td><td class="lead">v1 pinned a submodule commit that did not exist upstream, so a fresh clone could not be set up at all.</td><td class="lead">An unrunnable repository</td></tr>
+      <tr><td class="lead"><b>Extract features by forward hooks</b><br>not by forking the policy</td><td class="lead">Reads internal activations without modifying or vendoring lerobot.</td><td class="lead">A fork that drifts from upstream and cannot be updated</td></tr>
+      <tr><td class="lead"><b>400-step episodes everywhere</b></td><td class="lead">Fixed once in one module, used by baseline, calibration, labelling and ablation alike.</td><td class="lead">Numbers from different runs that are quietly not comparable</td></tr>
+      <tr><td class="lead"><b>Platform-aware MUJOCO_GL</b><br>glfw on macOS, egl elsewhere</td><td class="lead">EGL does not exist on macOS; the original blanket default failed there.</td><td class="lead">Rendering failing deep inside a long run</td></tr>
+      <tr><td class="lead"><b>Every script is a gate</b><br>prints PASS/FAIL, exits non-zero</td><td class="lead">Makes failure the loud default rather than something to notice later.</td><td class="lead">Pipelines that complete while having done nothing</td></tr>
+      <tr><td class="lead"><b>artifacts/ is gitignored</b></td><td class="lead">Outputs are regenerable; the scripts and the README are the source of truth.</td><td class="lead">A repo where results and code disagree about which is current</td></tr>
+      <tr><td class="lead"><b>Long jobs under nohup</b></td><td class="lead">Learned the hard way: a 90-minute run was killed mid-flight by a wrapper timeout.</td><td class="lead">Losing hours of compute to a dropped session</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>7.2 &nbsp;Running it on a laptop without cooking it</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td class="lead"><b>One torch thread per worker</b></td><td class="lead">The single most important knob. Without it each of N workers spawns a thread pool sized to the whole machine, so they contend — <b>slower than running serially, and hotter</b>.</td></tr>
+      <tr><td class="lead"><b>Performance cores minus one</b></td><td class="lead">This M5 has 4 performance and 6 efficiency cores. The E-cores are much slower at MuJoCo, so scheduling onto them adds heat for little throughput and makes the machine unusable meanwhile.</td></tr>
+      <tr><td class="lead"><b>Thermal governor on <code>NSProcessInfo.thermalState</code></b></td><td class="lead">Apple's own thermal-pressure API. No sudo, no SMC sampling, no third-party tools. Pauses at "serious", resumes when it drops.</td></tr>
+      <tr><td class="lead"><b>Not <code>pmset -g therm</code></b></td><td class="lead">It reports nothing until a thermal event has already been recorded, so it cannot be polled proactively.</td></tr>
+      <tr><td class="lead"><b>Pause at "serious", not "fair"</b></td><td class="lead">"Fair" is normal for sustained compute — pausing there would stall the job permanently rather than protect anything.</td></tr>
+      <tr><td class="lead"><b><code>spawn</code>, not <code>fork</code></b></td><td class="lead">MuJoCo and torch are not fork-safe.</td></tr>
+      <tr><td class="lead"><b>Per-episode shards written immediately</b></td><td class="lead">A kill costs at most one episode. This was not hypothetical — a run was killed at 33/80 and resumed with zero recomputation.</td></tr>
+      <tr><td class="lead"><b>Projected total printed after episode 1</b></td><td class="lead">An overrun becomes visible in minutes rather than hours.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note good">Result across roughly 12 hours of labelling: <b>zero thermal pauses</b>, and
+  the machine never left "fair".</p>
+</section>
+
+<section class="wrap stack">
+  <h2>7.3 &nbsp;Disturbances</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr><td class="lead"><b>Four kinds, three hook points</b><br>physics / action / observation</td><td class="lead">Different kinds of failure need different mechanisms. Teleporting the cube is a world edit; forcing a gripper open is an action edit; occlusion is a perception edit.</td><td class="lead">A suite that only tests one failure mode</td></tr>
+      <tr class="hi"><td class="lead"><b>Hook order: physics &rarr; <u>re-observe</u> &rarr; observation &rarr; act &rarr; action &rarr; step</b></td><td class="lead">The re-observe is load-bearing. Without it the policy acts on an image of where the cube <em>used to be</em>.</td><td class="lead">A disturbance the policy cannot perceive, which looks far stronger than it is</td></tr>
+      <tr><td class="lead"><b>All randomness drawn in <code>bind()</code></b><br>not lazily at each hook</td><td class="lead">Makes a disturbance a pure function of its spec, so replaying an episode from a snapshot reproduces it exactly.</td><td class="lead">Branch rollouts that silently experience different disturbances</td></tr>
+      <tr><td class="lead"><b>Every disturbance records whether it fired</b></td><td class="lead">Directly targets v1's fatal bug.</td><td class="lead">An unperturbed episode counted as perturbed</td></tr>
+      <tr><td class="lead"><b>Two exception types, not one</b></td><td class="lead"><code>PerturbationNeverFired</code> means the episode ended before the onset — legitimate, exclude and count it. A plain <code>RuntimeError</code> means it ran <em>past</em> the onset and still did nothing — a real defect.</td><td class="lead">A long sweep crashing on ordinary data, or a real bug being swallowed</td></tr>
+      <tr><td class="lead"><b>Onset window from measured task timing</b><br>40&ndash;160 &rarr; <b>150&ndash;280</b></td><td class="lead">First cube contact is at median step 154. The original window fired almost entirely before the grasp.</td><td class="lead">Half the dataset being disturbances that do nothing</td></tr>
+      <tr><td class="lead"><b>Onset randomised within the window</b></td><td class="lead">So the model cannot learn "trouble always starts at step 120".</td><td class="lead">A predictor that has memorised the schedule</td></tr>
+      <tr class="hi"><td class="lead"><b>Gate = in-band <u>AND</u> &ge;15 point drop</b></td><td class="lead">With a 65% baseline, a disturbance that does nothing scores 65% and passes an absolute 25&ndash;65% band. <code>grasp_slip</code> passed it four times while having no effect.</td><td class="lead">Calibrating a disturbance that does not disturb</td></tr>
+      <tr><td class="lead"><b>Duration is overridable per kind</b></td><td class="lead">For <code>grasp_slip</code>, duration is the <em>only</em> meaningful knob — the gripper is either forced open or not.</td><td class="lead">A magnitude sweep that varies a parameter the kind ignores</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>7.4 &nbsp;Measuring reversibility</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td class="lead"><b><code>mjSTATE_INTEGRATION</code> (262 numbers)</b><br>not <code>get_state()</code> (45)</td><td class="lead">The 45 omit the constraint solver's warm-start cache, so branches diverge from identical snapshots.</td><td class="lead">Every label inheriting compounding numerical error</td></tr>
+      <tr><td class="lead"><b>Snapshot carries the step counter too</b></td><td class="lead">It lives in a gym wrapper, outside MuJoCo entirely.</td><td class="lead">R collapsing to (branch 0 won)/8 with no error raised</td></tr>
+      <tr><td class="lead"><b><code>restore()</code> rejects a raw array</b><br>requires a <code>SimState</code></td><td class="lead">Passing bare physics is exactly the mistake that caused the counter leak. The type system now refuses it.</td><td class="lead">The same bug returning later</td></tr>
+      <tr><td class="lead"><b>Branches run open-loop at h=100</b></td><td class="lead">A 250-step branch costs ~3 policy forward passes instead of 250. The label is about whether recovery is <em>possible</em>, not how cleverly you drive afterwards.</td><td class="lead">A 10&times; larger compute bill for no extra information</td></tr>
+      <tr><td class="lead"><b>M = 8 branches, stride 25</b></td><td class="lead">Budget compromise. 16 label points per episode at 8 branches is ~2.6M simulator steps for 80 episodes.</td><td class="lead">&mdash;</td></tr>
+      <tr><td class="lead"><b>Per-branch Gaussian action noise, &sigma;=0.01</b></td><td class="lead">Restore is bitwise exact and ACT is deterministic, so without noise all 8 branches are identical and R can only be 0 or 1. &sigma; chosen by sweep: 0.01 leaves baseline success unchanged at 65%, 0.02 drops it to 40%.</td><td class="lead">Eight identical branches, or a noise level that biases every label downward</td></tr>
+      <tr><td class="lead"><b>Branch seed = timestep&times;10000 + index</b></td><td class="lead">No two branches anywhere in the dataset share a noise sequence.</td><td class="lead">Correlated branches inflating apparent agreement</td></tr>
+      <tr><td class="lead"><b>Restore once more after labelling</b></td><td class="lead">Leaves the episode exactly where it was.</td><td class="lead">Measurement perturbing the thing being measured</td></tr>
+      <tr><td class="lead"><b>Branches do not re-apply the disturbance</b></td><td class="lead">A definition, stated explicitly: R is recoverability of the <em>state you are now in</em>, under undisturbed future dynamics. Faithful for physics-level disturbances, noted as slightly optimistic for occlusion.</td><td class="lead">An unstated assumption doing silent work</td></tr>
+      <tr class="hi"><td class="lead"><b>Shard filename encodes every label-determining setting</b></td><td class="lead">Stride, branches, noise, horizon, max steps, onset window, magnitude. Not just the seed.</td><td class="lead">Silently serving labels measured under a different disturbance — and it converted a real incident from corruption into a recoverable mistake</td></tr>
+      <tr><td class="lead"><b>Loader refuses mixed configurations</b></td><td class="lead">Two labelling configs in one directory would be concatenated without complaint. Different <em>kinds</em> still mix freely, since that is intentional.</td><td class="lead">Training on a mixture nobody chose</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>7.5 &nbsp;The model</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr><td class="lead"><b>Same MLP shape as v1's predictor</b><br>input &rarr; 256 &rarr; 128 &rarr; 1</td><td class="lead">Deliberate. If v2 works and v1 did not, the difference is then the <em>target quantity</em>, not the architecture.</td><td class="lead">Confounding a better target with a better network</td></tr>
+      <tr><td class="lead"><b>Sigmoid + soft-target BCE</b><br>not MSE</td><td class="lead">Labels are fractions (wins/8). BCE against a soft target is the proper scoring rule and is better calibrated near 0 and 1 — exactly where the controller acts.</td><td class="lead">Systematic miscalibration at the extremes</td></tr>
+      <tr class="hi"><td class="lead"><b>Splits by episode, never within one</b></td><td class="lead">States 25 steps apart share a seed, a disturbance, and often a chunk. They are near-duplicates.</td><td class="lead">A model that looks calibrated and is worthless</td></tr>
+      <tr><td class="lead"><b>5-fold CV with pooled out-of-fold predictions</b><br>not a single split</td><td class="lead">A single 24/8/8 split chose a feature set at &rho;=0.509 on validation which then scored 0.265 on test — a 0.24 swing on the same model.</td><td class="lead">Drawing conclusions from an 8-episode test set</td></tr>
+      <tr><td class="lead"><b>Feature groups swept, selected on validation</b></td><td class="lead">1206 dimensions against ~300 training states overfits. Which subset generalises is empirical — but choosing it on test would make the reported number meaningless.</td><td class="lead">Selection bias masquerading as a result</td></tr>
+      <tr><td class="lead"><b>Standardiser fit on training states only</b></td><td class="lead">Same leakage rule as the split.</td><td class="lead">Test statistics leaking into training</td></tr>
+      <tr><td class="lead"><b>Hooks assert they fired</b></td><td class="lead">A silent hook yields zeros; a model trained on zeros predicts the mean and looks like "these features aren't informative" rather than like a bug.</td><td class="lead">A bug diagnosed as a negative result</td></tr>
+      <tr><td class="lead"><b>Features concatenated in sorted key order</b></td><td class="lead">A vector built today lines up with a model trained yesterday.</td><td class="lead">Silent feature misalignment</td></tr>
+      <tr><td class="lead"><b>Per-fold heads saved alongside their held-out episodes</b></td><td class="lead">Lets the ablation score each episode with a model that never trained on it, making the learned controller directly comparable to the oracle.</td><td class="lead">Flattering the learned side exactly where it is being compared</td></tr>
+      <tr><td class="lead"><b>Report Spearman, not just loss</b></td><td class="lead">The controller only needs the <em>ordering</em> of states to be right; it maps R to a horizon monotonically.</td><td class="lead">Optimising a metric the application does not use</td></tr>
+      <tr><td class="lead"><b>Report a predict-the-mean baseline alongside</b></td><td class="lead">A model can post a respectable correlation while being no better than the mean in absolute error.</td><td class="lead">A correlation that impresses and means nothing</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>7.6 &nbsp;The controller</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td class="lead"><b>h = clip(h_min, 100, 100&middot;R&#770;<sup>&gamma;</sup>)</b></td><td class="lead">Monotone in R, bounded, and with one interpretable knob. &gamma;&gt;1 makes the controller shorten sooner as R falls.</td></tr>
+      <tr class="hi"><td class="lead"><b>h_min raised 5 &rarr; 20</b></td><td class="lead">h=5 measured 0/40 because the arm stalls there. A controller whose floor sits in the collapse regime is <em>punished for reacting</em>, which inverts the entire intent of gating.</td></tr>
+      <tr><td class="lead"><b>Gated and risk-gated share one code body</b></td><td class="lead">They differ only in which scalar they consume — which is precisely the comparison being made.</td></tr>
+      <tr><td class="lead"><b>Oracle interpolates between labelled timesteps</b></td><td class="lead">Labels exist every 25 steps. Defaulting unlabelled steps to a constant would quietly degrade the oracle into a fixed-horizon policy.</td></tr>
+      <tr><td class="lead"><b>Temporal ensembling off</b></td><td class="lead">It blurs what "committed for h steps" means, and the commitment horizon is the entire subject.</td></tr>
+      <tr><td class="lead"><b>Executor is pull-based</b><br><code>action = ex.act(t, obs)</code></td><td class="lead">The caller keeps the environment loop, so every condition in the ablation is one <code>horizon_fn</code> against one identical loop.</td></tr>
+      <tr><td class="lead"><b>Horizon outside [1, chunk_size] raises</b></td><td class="lead">Zero would replan forever without stepping; longer than the chunk would index past its end. Both are controller bugs.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>7.7 &nbsp;Evaluation and statistics</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr><td class="lead"><b>Identical seeds and disturbances across conditions</b></td><td class="lead">Only the horizon rule changes.</td><td class="lead">A success-rate gap that cannot be attributed</td></tr>
+      <tr><td class="lead"><b>Conditions aligned to their common episode set</b></td><td class="lead">Shortening the horizon changes when episodes terminate, so exclusions genuinely differ between conditions.</td><td class="lead">Comparing six slightly different experiments</td></tr>
+      <tr><td class="lead"><b>McNemar, not a two-proportion test</b></td><td class="lead">The conditions are paired; treating them as independent throws that away and loses power.</td><td class="lead">Underpowered analysis of an already-underpowered design</td></tr>
+      <tr><td class="lead"><b>Bonferroni stated, not quietly ignored</b></td><td class="lead">15 pairwise comparisons at &alpha;=0.05 expect 0.75 false positives even under a true null.</td><td class="lead">Reporting p=0.013 as a finding</td></tr>
+      <tr><td class="lead"><b>Power analysis reported</b></td><td class="lead">"Not significant" at n=76 means "underpowered", not "no effect" — and equally is not evidence <em>for</em> the method.</td><td class="lead">Both possible misreadings</td></tr>
+      <tr class="hi"><td class="lead"><b>Lead time relative to each episode's own first horizon</b><br>not an absolute threshold</td><td class="lead">Under an absolute 50-step cutoff, fixed h=20 scored as "reacting" at every step of every episode — lead time &minus;106 on 30/30, false alarm 100% — purely because 20 &lt; 50.</td><td class="lead">Fabricated reaction statistics for constant-horizon policies</td></tr>
+      <tr><td class="lead"><b>False-alarm rate reported beside lead time</b></td><td class="lead">Without it, a controller that always shortens scores perfectly on lead time and is useless.</td><td class="lead">A metric that rewards panicking</td></tr>
+      <tr><td class="lead"><b>Mean horizon pooled over replans, not episodes</b></td><td class="lead">One long commitment should not outweigh four short ones just by being its own episode.</td><td class="lead">A misleading average</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="wrap stack">
+  <h2>7.8 &nbsp;The demo videos</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td class="lead"><b>Pairs selected by outcome divergence</b></td><td class="lead">A pair where both policies succeed demonstrates nothing. If no pair diverges the script writes <em>no file</em> and says why, rather than producing a persuasive-looking video that shows no difference.</td></tr>
+      <tr><td class="lead"><b>Captions show the live task stage</b><br>not the final verdict</td><td class="lead">The first version burned the episode's outcome onto every frame, so a run read "SUCCESS" from step 0 before the robot had done anything.</td></tr>
+      <tr><td class="lead"><b>Held frames dimmed and captioned</b></td><td class="lead">When one episode ends early its last frame was silently duplicated, which reads as the simulation hanging.</td></tr>
+      <tr><td class="lead"><b>Frames held rather than truncated</b></td><td class="lead">Truncating to the shorter episode would hide the outcome of the longer one — usually the failure.</td></tr>
+      <tr><td class="lead"><b>A two-fixed-horizon mode was added</b></td><td class="lead">The script originally only compared fixed against gated, which structurally cannot show the cliff — the project's clearest result.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<div class="wrap pager"><a href="bugs.html">&larr; Bugs</a><a href="glossary.html">Next: Glossary &rarr;</a></div>
+</body></html>

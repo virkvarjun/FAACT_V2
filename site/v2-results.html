@@ -3,12 +3,14 @@
 <title>v2 results — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
 <nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
 <a href="index.html" >Contents</a>
-<a href="task.html" >1 &middot; The task</a>
-<a href="background.html" >2 &middot; Action chunking</a>
+<a href="walkthrough.html" >Walkthrough</a>
+<a href="task.html" >1 &middot; Task</a>
+<a href="background.html" >2 &middot; Chunking</a>
 <a href="v1.html" >3 &middot; v1</a>
 <a href="v2-method.html" >4 &middot; v2 method</a>
 <a href="v2-results.html" class="here">5 &middot; v2 results</a>
 <a href="bugs.html" >6 &middot; Bugs</a>
+<a href="design.html" >7 &middot; Design choices</a>
 <a href="glossary.html" >Glossary</a></div></nav>
 
 <div class="wrap stack" style="padding-top:52px">
@@ -86,6 +88,18 @@ Spearman(horizon, success), h &ge; 20 only:    +0.10    &larr; essentially flat<
     testing (p = 10<sup>&minus;5</sup>). Every comparison within the plateau is
     p &ge; 0.09.</p>
   </div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm"><h3>The stall, on a second seed</h3>
+  <p style="color:var(--ink-2)">Not one unlucky episode: h=5 produced a net displacement of
+  0.15&ndash;0.17 on every one of five seeds tested.</p></div>
+  <figure class="vid">
+    <video controls autoplay muted loop playsinline preload="metadata"
+      src="videos/cliff_seed9201_actuation_noise.mp4"></video>
+    <figcaption>Same comparison, different seed. The short-horizon arm again fails to complete a
+    grasp at all &mdash; this is the failure mode behind 0/40.</figcaption>
+  </figure>
 </section>
 
 <section class="wrap stack">

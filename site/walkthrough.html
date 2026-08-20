@@ -1,0 +1,275 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Walkthrough — FAACT notes</title><link rel="stylesheet" href="style.css"></head><body>
+<nav class="top"><div class="inner"><span class="brand">FAACT notes</span>
+<a href="index.html" >Contents</a>
+<a href="walkthrough.html" class="here">Walkthrough</a>
+<a href="task.html" >1 &middot; Task</a>
+<a href="background.html" >2 &middot; Chunking</a>
+<a href="v1.html" >3 &middot; v1</a>
+<a href="v2-method.html" >4 &middot; v2 method</a>
+<a href="v2-results.html" >5 &middot; v2 results</a>
+<a href="bugs.html" >6 &middot; Bugs</a>
+<a href="design.html" >7 &middot; Design choices</a>
+<a href="glossary.html" >Glossary</a></div></nav>
+
+<div class="wrap stack" style="padding-top:52px">
+  <p class="eyebrow">The whole project, in order</p>
+  <h1>Walkthrough</h1>
+  <p style="font-size:1.15rem;color:var(--ink-2)">The other chapters are organised by topic. This
+  one is organised by <b>what happened, when</b> — including the wrong turns, because the order in
+  which things were discovered is most of the story.</p>
+</div>
+
+<section class="wrap stack">
+  <h2>Stage 0 &nbsp;&middot;&nbsp; Starting from a failure</h2>
+  <p style="color:var(--ink-2)">The project begins with a post-mortem, not a hypothesis. v1 had
+  measured <b>0/20 baseline, 1/10 best intervention, zero recoveries</b>. The diagnosis was that
+  the disturbance flag had never been wired up, so nothing was ever disturbed.</p>
+  <p style="color:var(--ink-2)">That single fact set the constraints for everything after it:
+  verify the disturbance changes the world, verify the baseline against a reference, fix every
+  acceptance check <em>before</em> the run. Details in <a href="v1.html">chapter 3</a>.</p>
+  <p class="note"><b>The first real decision was to not retrain ACT.</b> The published checkpoint
+  was tried first, on the theory that verification is cheaper than training. It loaded, and the
+  six hours of training that had been the plan's biggest schedule risk evaporated.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 1 &nbsp;&middot;&nbsp; Making the environment work</h2>
+  <p style="color:var(--ink-2)">Two blockers, both anticipated from v1's notes and both real:</p>
+  <ul>
+    <li><b>Headless MuJoCo rendering.</b> Fails by returning an all-black image that otherwise
+    looks like success. The check therefore asserts the rendered frame has standard deviation
+    &gt; 1.0 rather than merely that rendering returned something.</li>
+    <li><b>Video decoding.</b> The dataset stores camera streams as video, and the decoder needs
+    FFmpeg <em>shared libraries</em> — a CLI binary on PATH is not enough. On macOS it also needs
+    <code>DYLD_LIBRARY_PATH</code>, because the decoder's search path resolves against the Python
+    prefix rather than Homebrew's.</li>
+  </ul>
+  <p class="note good">Gate result: <b>6/6 checks pass.</b> The rendered frame was also inspected
+  by eye — two arms and a red cube — because "std &gt; 1.0" would also pass on noise.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 2 &nbsp;&middot;&nbsp; A scare, and the verification that resolved it</h2>
+  <p style="color:var(--ink-2)">The baseline measured <b>65%</b>. The model card advertises
+  <b>83%</b>. That is a large enough gap to suspect a broken inference path.</p>
+  <p style="color:var(--ink-2)">Rather than guess, the checkpoint repository turned out to ship
+  <code>eval_info.json</code> — 500 per-episode records from the reference evaluation, each tagged
+  with its seed. Our runner uses the same seeds, so the comparison could be made episode by
+  episode:</p>
+  <pre>seeds 1000-1019 (n=20):   ours 13/20 = 65.0%   reference 13/20 = 65.0%   agreement 20/20
+seeds 1000-1049 (n=50):   ours 38/50 = 76.0%   reference 38/50 = 76.0%   agreement 48/50
+
+reference over its own first 20 seeds:   65.0%
+reference over all 500 seeds:            83.0%</pre>
+  <p style="color:var(--ink-2)"><b>The reference implementation scores 65% on those same 20
+  seeds.</b> The gap was the seed window, not a defect — those particular cube spawn positions are
+  a hard draw.</p>
+  <p class="note warn"><b>The lasting consequence:</b> at this success rate, n=20 carries a
+  &plusmn;11 point binomial band. Every rate quoted in this project from here on states its seed
+  window and its n, and the ablation was never run at n=20.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 3 &nbsp;&middot;&nbsp; Building disturbances, and two bugs in the foundations</h2>
+  <p style="color:var(--ink-2)">The perturbation suite and the snapshot/restore layer were written
+  before any policy was involved, since neither needs one. Writing the tests first paid immediately:</p>
+  <div class="card stack-sm">
+    <h3>The bitwise reproducibility test failed</h3>
+    <p style="color:var(--ink-2)">Two branches restored from an identical snapshot, driven by
+    identical actions, diverged by 2&times;10<sup>&minus;8</sup> within 150 steps. The cause was
+    the constraint solver's warm-start cache, absent from dm_control's 45-number state. Switching
+    to MuJoCo's own 262-number integration state fixed it.</p>
+  </div>
+  <div class="card stack-sm">
+    <h3>Then a second, worse one, found later</h3>
+    <p style="color:var(--ink-2)">The episode step counter lives in a gym wrapper, not in MuJoCo.
+    Branch 0 ran 280 steps; branches 1 and 2 ran <b>one step each</b>, silently. Both are described
+    in <a href="bugs.html">chapter 6</a>.</p>
+  </div>
+  <p class="note">Neither would have surfaced from looking at results. The first was caught by a
+  test demanding <em>bitwise</em> equality; the second by a test asserting equal step budgets.</p>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>Stage 4 &nbsp;&middot;&nbsp; Measuring reversibility for the first time</h2>
+    <p style="color:var(--ink-2)">With snapshot/restore trustworthy, the first labelled episode
+    produced exactly the signature the project was built to look for:</p>
+    <pre>seed 2001, grasp_slip, disturbance at step 42
+
+t:    25    50    75   100   125   150   175   200 ...
+R:  1.00  0.38  0.88  0.88  1.00  0.88  0.75  1.00 ...
+            &uarr;
+       disturbance lands — recoverability collapses, then recovers</pre>
+    <p style="color:var(--ink-2)">R drops sharply when the disturbance lands and climbs back as the
+    policy recovers. Reversibility was behaving like a real quantity.</p>
+  </div>
+  <figure class="vid">
+    <video controls autoplay muted loop playsinline preload="metadata"
+      src="videos/gated_seed8505_actuation_noise.mp4"></video>
+    <figcaption>A disturbed episode of the kind being labelled. Left commits 100 steps; right
+    varies its commitment on predicted reversibility. Both are running the same policy against the
+    same disturbance.</figcaption>
+  </figure>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 5 &nbsp;&middot;&nbsp; The first model, and a false diagnosis</h2>
+  <p style="color:var(--ink-2)">At 40 labelled episodes the model reached <b>&rho; = 0.479</b>,
+  below the 0.50 gate. Three hypotheses were available:</p>
+  <ol class="steps">
+    <li><b>The labels are too noisy.</b> Tested by measuring the labels' own test-retest
+    reliability: <b>0.977</b>. Ruled out — more branches would buy nothing.</li>
+    <li><b>Too many features for the sample size.</b> 1206 dimensions against ~300 training states.
+    A feature sweep showed the 1024-d transformer features were the <em>worst</em> performer while
+    fitting training data best — the signature of overfitting.</li>
+    <li><b>Not enough data.</b> Implied by the other two.</li>
+  </ol>
+  <p style="color:var(--ink-2)">Doubling the dataset moved &rho; from 0.479 to <b>0.660</b>,
+  confirming the diagnosis.</p>
+  <p class="note warn"><b>But a conclusion drawn along the way was wrong.</b> At 40 episodes the
+  28-dimensional feature set beat the 1024-d one, and this was written up as "reversibility is
+  predictable from arm state alone; the policy's internals add nothing". At 80 episodes that
+  reversed. It was a sample-size effect, not a fact about features — the first of four conclusions
+  in this project to reverse under a better test.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 6 &nbsp;&middot;&nbsp; The ablation, and a result that did not replicate</h2>
+  <p style="color:var(--ink-2)">The first ablation at n=30 showed the gated controller leading:
+  57% against 50% and 53%. Encouraging — and not significant.</p>
+  <p style="color:var(--ink-2)">Doubling to n=60 <b>reversed the ordering</b>: gated fell to 48%
+  while fixed h=20 rose to 58%. The n=30 lead had been noise. Had the project stopped there, it
+  would have reported a win that was not real.</p>
+  <div class="card stack-sm">
+    <h3>Then the oracle appeared to rescue it</h3>
+    <p style="color:var(--ink-2)">The decisive experiment is the <b>oracle</b>: the same controller
+    fed ground-truth measured R instead of a prediction. It separates "reversibility is the wrong
+    variable" from "our estimate is too weak".</p>
+    <pre>oracle vs fixed h=100:   77% vs 65%   p = 0.013
+oracle vs fixed h=20:    77% vs 61%   p = 0.019</pre>
+    <p style="color:var(--ink-2)">The first significant result in the project. The reading at the
+    time: <em>the lever works, our estimator is the bottleneck</em>.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 7 &nbsp;&middot;&nbsp; Discovering the disturbances were mistimed</h2>
+  <p style="color:var(--ink-2)">A calibration sweep — run to close a gap that had been marked as a
+  known weakness rather than to chase a suspicion — found that <code>grasp_slip</code> scored
+  <b>65% at every duration</b>, identical to undisturbed. It was doing nothing.</p>
+  <p style="color:var(--ink-2)">Measuring the task's own timing explained it:</p>
+  <pre>first cube contact:        median step 154
+transfer complete:         median step 278
+disturbance window in use:        40-160     &larr; almost entirely before the grasp</pre>
+  <p style="color:var(--ink-2)">Forcing a gripper open before it is holding anything does nothing.
+  Roughly half the labelled dataset consisted of episodes whose disturbance had no effect. The
+  window moved to 150&ndash;280 and the whole dataset was relabelled.</p>
+  <p class="note warn">The acceptance check that should have caught this was itself flawed: it
+  tested only whether success landed in a 25&ndash;65% band, and with a 65% baseline a
+  do-nothing disturbance passes. It now requires a <b>15-point drop</b> as well.</p>
+</section>
+
+<section class="wrap stack">
+  <h2>Stage 8 &nbsp;&middot;&nbsp; The oracle result evaporates</h2>
+  <p style="color:var(--ink-2)">Re-running on correctly-timed disturbances reversed the headline
+  finding:</p>
+  <div class="scroll"><table>
+    <thead><tr><th></th><th>Mistimed disturbances</th><th>Correct disturbances</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">fixed h=100</td><td>65%</td><td>47%</td></tr>
+      <tr class="hi"><td class="lead"><b>oracle R</b></td><td><b>77%</b> (p=0.013)</td><td><b>39%</b> (p=0.109)</td></tr>
+      <tr><td class="lead">Post-onset states already unrecoverable</td><td>39%</td><td>75%</td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--ink-2)">With correct disturbances the oracle <em>loses</em> to committing
+  blindly. Three quarters of disturbed states are already unrecoverable, so the intervention has
+  nothing to act on and only its cost remains.</p>
+  <p class="note">Second reversal. And a calibration warning that generalises: both regimes sat
+  inside the standard 25&ndash;65% success band and behaved oppositely. <b>Calibrating disturbances
+  by success rate does not guarantee a useful distribution of recoverable states.</b></p>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>Stage 9 &nbsp;&middot;&nbsp; The sweep that explained everything</h2>
+    <p style="color:var(--ink-2)">A claim had been made from six scattered ablation points —
+    "success is monotone in how long you commit, &rho;=0.94". A direct seven-point sweep tested it
+    properly and showed it was wrong.</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Horizon</th><th>Success (n=37)</th><th>vs h=40</th></tr></thead>
+    <tbody>
+      <tr><td>5</td><td>0/37 &nbsp;&nbsp;0%</td><td class="sig">p = 0.00001</td></tr>
+      <tr><td>10</td><td>1/37 &nbsp;&nbsp;3%</td><td class="sig">p = 0.00002</td></tr>
+      <tr><td>20</td><td>11/37 &nbsp;30%</td><td class="ns">p = 0.092</td></tr>
+      <tr class="hi"><td>40</td><td><b>18/37 &nbsp;49%</b></td><td class="ns">&mdash;</td></tr>
+      <tr><td>60</td><td>14/37 &nbsp;38%</td><td class="ns">p = 0.219</td></tr>
+      <tr><td>80</td><td>15/37 &nbsp;41%</td><td class="ns">p = 0.508</td></tr>
+      <tr><td>100</td><td>13/37 &nbsp;35%</td><td class="ns">p = 0.125</td></tr>
+    </tbody>
+  </table></div>
+  <div class="wrap stack-sm">
+    <p style="color:var(--ink-2)"><b>A cliff and a plateau, not a ramp.</b> Third reversal. And it
+    explains every negative result at once: every gated controller operated at a mean horizon of
+    41&ndash;56, inside the plateau, where the horizon does not change success at all.</p>
+  </div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <h2>Stage 10 &nbsp;&middot;&nbsp; Watching the videos, and the fourth reversal</h2>
+    <p style="color:var(--ink-2)">The explanation written for the cliff was that frequent
+    replanning makes the motion jerky and self-destructive, because ACT emits absolute joint
+    targets. Plausible, and never checked.</p>
+    <p style="color:var(--ink-2)">Then someone watched the rollout and asked why the arm was not
+    moving.</p>
+  </div>
+  <figure class="vid">
+    <video controls autoplay muted loop playsinline preload="metadata"
+      src="videos/cliff_seed9203_actuation_noise.mp4"></video>
+    <figcaption>Left commits 5 steps at a time; right commits 40. The left arm never gets anywhere
+    — it is not thrashing, it is <b>stalling</b>.</figcaption>
+  </figure>
+  <div class="wrap stack-sm">
+    <pre>MEASURED — net joint displacement over an episode:
+  h=5     0.16     per-seed: 0.15  0.17  0.16  0.17  0.16
+  h=100   2.02     per-seed: 2.02  2.04  1.93  2.05  2.03</pre>
+    <p style="color:var(--ink-2)">An ACT chunk begins at the current pose. Commit only its first 5
+    actions, replan from a barely-changed state, and the policy re-emits a near-identical chunk.
+    The robot creeps at a fraction of speed and runs out of time.</p>
+    <p class="note warn"><b>The numbers were right the whole time; the explanation was wrong.</b>
+    No automated check catches that — a test can assert a value, not a sentence. It was caught by a
+    human looking at raw output, which is the one thing the rest of the pipeline cannot do.</p>
+  </div>
+</section>
+
+<section class="wrap stack">
+  <h2>Where it ended</h2>
+  <div class="card stack-sm">
+    <p style="font-size:1.15rem"><b>Reversibility is measurable, predictable, and useless as a
+    horizon controller on this task.</b></p>
+    <p style="color:var(--ink-2)">Right signal, wrong actuator. Three independent lines of evidence
+    say the estimate was never the bottleneck: accuracy improved 0.479 &rarr; 0.660 &rarr; 0.693
+    with control performance unmoved; calibrating it made things 37% worse; and an oracle with
+    perfect information gains nothing either.</p>
+    <p style="color:var(--ink-2)">If low reversibility should trigger anything, it is not "replan
+    more often" — the horizon has no authority in the region any controller occupies. It would have
+    to be a genuinely different recovery behaviour.</p>
+  </div>
+  <div class="metrics" style="margin-top:8px">
+    <div class="metric"><span class="lab">labelled states</span><span class="bignum">1,990</span></div>
+    <div class="metric"><span class="lab">simulated steps</span><span class="bignum">~2.6M</span></div>
+    <div class="metric"><span class="lab">conclusions reversed</span><span class="bignum bad">4</span></div>
+    <div class="metric"><span class="lab">thermal pauses</span><span class="bignum">0</span></div>
+  </div>
+  <p class="note good"><b>Four of the project's own conclusions reversed under better tests</b> —
+  that a better estimator would help, that calibration would help, that the oracle beat the
+  baseline, and that success was monotone in horizon. Each reversal came from running the check
+  rather than from noticing something looked wrong. That is the process working.</p>
+</section>
+
+<div class="wrap pager"><a href="index.html">&larr; Contents</a><a href="task.html">Start chapter 1 &rarr;</a></div>
+</body></html>
