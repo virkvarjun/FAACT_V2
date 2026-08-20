@@ -94,6 +94,40 @@ footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--rule);
   This page walks through what we built, what you can see happening, and why the idea fails.</p>
 </header>
 
+<section class="wrap stack">
+  <p class="eyebrow">Background</p>
+  <h2>What an action-chunking policy is, and why it has a problem</h2>
+  <p style="color:var(--ink-2)">A robot policy normally picks one action, looks at the world,
+  then picks the next. <b>Action chunking</b> changes that: the policy predicts a whole
+  sequence &mdash; here 100 actions, about two seconds of motion &mdash; and executes it
+  open-loop before looking again. ACT, the policy used throughout this project, works this
+  way and it is why it produces smooth, human-like motion instead of twitchy
+  step-by-step corrections.</p>
+  <p style="color:var(--ink-2)">The cost is reactivity. <b>While executing a chunk, the robot
+  is blind.</b> Knock the cube at step 3 and nothing can respond until step 100. So how long
+  should it commit for? Commit long and you get smooth motion that ignores surprises; commit
+  short and you can react, but you interrupt the motion constantly.</p>
+  <div class="card stack-sm">
+    <h3>The idea this project tests</h3>
+    <p style="color:var(--ink-2)">Let the robot decide how long to commit based on how much
+    trouble it is in. Specifically, on <b>reversibility</b> &mdash; the probability the task
+    still succeeds if you stop and replan right now. High reversibility means a mistake is
+    still fixable, so commit long. Low reversibility means the point of no return is close, so
+    commit short and stay reactive.</p>
+    <p class="num" style="color:var(--ink-2);font-size:.95rem">h = clip(h_min, 100, 100 &times;
+    R&#770;<sup>&gamma;</sup>)</p>
+  </div>
+  <p class="note">The appeal is that one quantity would govern three separate problems that
+  the literature solves separately: how long to commit, when to intervene, and when to give
+  up. This page reports what happened when we measured it.</p>
+  <p class="note warn"><b>Why this rebuild exists.</b> A previous attempt measured 0 successes
+  out of 20 and zero recoveries. The cause was not the method: its perturbations were never
+  actually implemented, so nothing was ever disturbed and there was no headroom above a floor
+  of zero. Everything here is built so that cannot happen quietly &mdash; every disturbance is
+  verified to change the world, the baseline is verified against the reference implementation
+  episode by episode, and each acceptance check is fixed before the run.</p>
+</section>
+
 <section class="wide stack">
   <div class="wrap stack-sm">
     <p class="eyebrow">Watch it &middot; 1 of 2</p>
@@ -218,6 +252,45 @@ footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--rule);
     comparisons are the <em>only</em> results in this project that survive correction for multiple
     testing.</p>
   </div>
+</section>
+
+<section class="wide stack">
+  <div class="wrap stack-sm">
+    <p class="eyebrow">The full record</p>
+    <h2>Every stage, and what it measured</h2>
+    <p style="color:var(--ink-2)">Each stage had a blocking acceptance check fixed in advance.
+    Two did not pass, and are reported as failures.</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Stage</th><th>What it does</th><th>Measured</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td class="lead">Environment</td><td class="lead">headless MuJoCo, video decode, EGL</td><td>6/6 checks</td><td><span class="chip pass">pass</span></td></tr>
+      <tr><td class="lead">ACT baseline</td><td class="lead">reproduce the reference eval seed-for-seed</td><td>48/50 agree &middot; 76.0% vs 76.0%</td><td><span class="chip pass">pass</span></td></tr>
+      <tr><td class="lead">Disturbances</td><td class="lead">must land in 25&ndash;65% <em>and</em> drop success &ge;15pt</td><td>2 of 4 kinds effective</td><td><span class="chip fail">fail</span></td></tr>
+      <tr><td class="lead">Reversibility labels</td><td class="lead">snapshot, replan 8&times;, count successes</td><td>0.78 &rarr; 0.24 &middot; 1,990 states</td><td><span class="chip pass">pass</span></td></tr>
+      <tr><td class="lead">Reversibility model</td><td class="lead">predict R from held-out episodes</td><td>&rho; = 0.693 &middot; 5-fold CV</td><td><span class="chip pass">pass</span></td></tr>
+      <tr><td class="lead">Horizon control</td><td class="lead">fixed vs learned vs oracle</td><td>no gain over a fixed horizon</td><td><span class="chip fail">fail</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="wrap stack-sm">
+    <h3 style="margin-top:14px">The controller comparison in full</h3>
+    <p style="color:var(--ink-2)">All six on the same 76 episodes with identical disturbances.
+    The learned rows are scored by a model from the cross-validation fold that never trained on
+    that episode, so they are directly comparable to the oracle.</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Controller</th><th>Success</th><th>Replans/ep</th><th>Mean horizon</th><th>vs fixed h=100</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td class="lead"><b>fixed h=100 &mdash; as published</b></td><td><b>36/76 &nbsp;47%</b></td><td>3.6</td><td>100</td><td class="ns">&mdash;</td></tr>
+      <tr><td class="lead">learned gating, &gamma;=1</td><td>35/76 &nbsp;46%</td><td>7.6</td><td>50</td><td class="ns">p = 1.000</td></tr>
+      <tr><td class="lead">oracle R, &gamma;=1</td><td>30/76 &nbsp;39%</td><td>8.8</td><td>43</td><td class="ns">p = 0.109</td></tr>
+      <tr><td class="lead">oracle R, &gamma;=2</td><td>30/76 &nbsp;39%</td><td>9.2</td><td>41</td><td class="ns">p = 0.109</td></tr>
+      <tr><td class="lead">learned gating, &gamma;=2</td><td>30/76 &nbsp;39%</td><td>9.3</td><td>41</td><td class="ns">p = 0.238</td></tr>
+      <tr><td class="lead">fixed h=20 &mdash; replan 5&times; more</td><td>25/76 &nbsp;33%</td><td>19.3</td><td>20</td><td class="ns">p = 0.061</td></tr>
+    </tbody>
+  </table></div>
+  <div class="wrap"><p class="note">Not one comparison is significant. An oracle handed
+  ground-truth reversibility does no better than committing blindly to 100 steps.</p></div>
 </section>
 
 <section class="wrap stack">
